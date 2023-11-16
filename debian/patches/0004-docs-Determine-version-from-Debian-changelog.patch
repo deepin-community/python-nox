@@ -1,0 +1,37 @@
+From: Stefano Rivera <stefanor@debian.org>
+Date: Sun, 7 May 2023 21:49:25 -0400
+Subject: docs: Determine version from Debian changelog
+
+We don't have nox installed while building docs.
+
+Forwarded: not-needed
+---
+ docs/conf.py | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/docs/conf.py b/docs/conf.py
+index ed9823c..86bf677 100644
+--- a/docs/conf.py
++++ b/docs/conf.py
+@@ -16,10 +16,7 @@ from __future__ import annotations
+ import os
+ import sys
+ 
+-try:
+-    import importlib.metadata as metadata
+-except ImportError:
+-    import importlib_metadata as metadata
++from subprocess import check_output
+ 
+ # If extensions (or modules to document with autodoc) are in another directory,
+ # add these directories to sys.path here. If the directory is relative to the
+@@ -68,7 +65,8 @@ author = "Alethea Katherine Flowers"
+ # built documents.
+ #
+ # The short X.Y version.
+-version = metadata.version("nox")
++version = check_output(("dpkg-parsechangelog", "-SVersion"),
++                       cwd="..", encoding="ascii").strip()
+ # The full version, including alpha/beta/rc tags.
+ release = version
+ 

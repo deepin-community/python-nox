@@ -1,0 +1,8 @@
+Document: python-nox-doc
+Title: nox Documentation
+Author: Alethea Katherine Flowers <me@thea.codes>
+Section: Programming/Python
+
+Format: HTML
+Index: /usr/share/doc/python-nox-doc/html/index.html
+Files: /usr/share/doc/python-nox-doc/html/*.html

@@ -1,0 +1,6 @@
+0001-Disable-withchazel-pygments-style-as-it-is-not-packa.patch
+0002-Disable-privacy-breaches-in-HTML-documentation.patch
+0003-Support-older-virtualenv-versions-in-tests.patch
+0004-docs-Determine-version-from-Debian-changelog.patch
+0005-to_to_nox-implementation-for-tox-4.patch
+#0006-Testing-and-CI-with-multiple-versions-of-tox.patch

@@ -1,4 +1,19 @@
 #!/usr/bin/make -f
 
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+
+export PYBUILD_TEST_PYTEST=1
+export PYBUILD_TEST_ARGS=--ignore tests/test_action_helper.py -k "not test_create_reuse_stale_virtualenv_environment and not test_create_reuse_venv_environment and not test_create_venv_backend"
+
 %:
-	dh $@
+	dh $@ --with sphinxdoc --buildsystem=pybuild
+
+override_dh_sphinxdoc:
+ifeq (,$(findstring nodoc, $(DEB_BUILD_OPTIONS)))
+	PYTHONPATH=. python3 -m sphinx -b html -d docs/.build/.doctrees -N docs $(CURDIR)/debian/python-nox-doc/usr/share/doc/python-nox-doc/html
+	dh_sphinxdoc
+endif
+
+execute_before_dh_clean:
+	rm -rf docs/.build
