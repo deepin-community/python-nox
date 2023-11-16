@@ -1,0 +1,9 @@
+#!/bin/sh
+
+set -e
+
+cp -r tests ${AUTOPKGTEST_TMP}
+cd ${AUTOPKGTEST_TMP}
+for p in $(py3versions -s); do
+    $p -m pytest --ignore tests/test_action_helper.py -k "not test_create_reuse_stale_virtualenv_environment and not test_create_reuse_venv_environment and not test_create_venv_backend" tests
+done
