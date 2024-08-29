@@ -126,25 +126,47 @@ Then running ``nox --session tests`` will actually run all parametrized versions
 Changing the sessions default backend
 -------------------------------------
 
-By default Nox uses ``virtualenv`` as the virtual environment backend for the sessions, but it also supports ``conda``, ``mamba``, and ``venv`` as well as no backend (passthrough to whatever python environment Nox is running on). You can change the default behaviour by using ``-db <backend>`` or ``--default-venv-backend <backend>``. Supported names are ``('none', 'virtualenv', 'conda', 'mamba', 'venv')``.
-
-.. code-block:: console
-
-    nox -db conda
-    nox --default-venv-backend conda
+By default Nox uses ``virtualenv`` as the virtual environment backend for the sessions, but it also supports ``uv``, ``conda``, ``mamba``, ``micromamba``, and ``venv`` as well as no backend (passthrough to whatever python environment Nox is running on). You can change the default behaviour by using ``-db <backend>`` or ``--default-venv-backend <backend>``. Supported names are ``('none', 'uv', 'virtualenv', 'conda', 'mamba', 'venv')``.
 
 
-You can also set this option in the Noxfile with ``nox.options.default_venv_backend``. In case both are provided, the commandline argument takes precedence.
+.. tabs::
+
+   .. code-tab:: console CLI options
+
+         nox -db conda
+         nox --default-venv-backend conda
+
+   .. code-tab:: console Environment variables
+
+         NOX_DEFAULT_VENV_BACKEND=conda
+
+.. note::
+
+   The ``uv``, ``conda``, ``mamba``, and ``micromamba`` backends require their
+   respective programs be pre-installed. ``uv`` is distributed as a Python
+   package and can be installed with the ``nox[uv]`` extra.
+
+You can also set this option with the ``NOX_DEFAULT_VENV_BACKEND`` environment variable, or in the Noxfile with ``nox.options.default_venv_backend``. In case more than one is provided, the command line argument overrides the environment variable, which in turn overrides the Noxfile configuration.
 
 Note that using this option does not change the backend for sessions where ``venv_backend`` is explicitly set.
 
+.. warning::
+
+   The ``uv`` backend does not install anything by default, including ``pip``,
+   as ``uv pip`` is used to install programs instead. If you need to manually
+   interact with pip, you should install it with ``session.install("pip")``.
+
+Backends that could be missing (``uv``, ``conda``, ``mamba``, and ``micromamba``) can have a fallback using ``|``, such as ``uv|virtualenv`` or ``micromamba|mamba|conda``. This will use the first item that is available on the users system.
+
+If you need to check to see which backend was selected, you can access it via
+``session.venv_backend`` in your noxfile.
 
 .. _opt-force-venv-backend:
 
 Forcing the sessions backend
 ----------------------------
 
-You might work in a different environment than a project's default continuous integration settings, and might wish to get a quick way to execute the same tasks but on a different venv backend. For this purpose, you can temporarily force the backend used by **all** sessions in the current Nox execution by using ``-fb <backend>`` or ``--force-venv-backend <backend>``. No exceptions are made, the backend will be forced for all sessions run whatever the other options values and Noxfile configuration. Supported names are ``('none', 'virtualenv', 'conda', 'venv')``.
+You might work in a different environment than a project's default continuous integration settings, and might wish to get a quick way to execute the same tasks but on a different venv backend. For this purpose, you can temporarily force the backend used by **all** sessions in the current Nox execution by using ``-fb <backend>`` or ``--force-venv-backend <backend>``. No exceptions are made, the backend will be forced for all sessions run whatever the other options values and Noxfile configuration. Supported names are ``('none', 'uv', 'virtualenv', 'conda', 'mamba', 'micromamba', 'venv')``.
 
 .. code-block:: console
 
@@ -161,34 +183,51 @@ Finally note that the ``--no-venv`` flag is a shortcut for ``--force-venv-backen
     nox --no-venv
 
 .. _opt-reuse-existing-virtualenvs:
+.. _opt-reuse-venv:
 
 Re-using virtualenvs
 --------------------
 
-By default, Nox deletes and recreates virtualenvs every time it is run. This is usually fine for most projects and continuous integration environments as `pip's caching <https://pip.pypa.io/en/stable/cli/pip_install/#caching>`_ makes re-install rather quick. However, there are some situations where it is advantageous to re-use the virtualenvs between runs. Use ``-r`` or ``--reuse-existing-virtualenvs``:
+By default, Nox deletes and recreates virtualenvs every time it is run. This is
+usually fine for most projects and continuous integration environments as
+`pip's caching <https://pip.pypa.io/en/stable/cli/pip_install/#caching>`_ makes
+re-install rather quick.  However, there are some situations where it is
+advantageous to reuse the virtualenvs between runs.  Use ``-r`` or
+``--reuse-existing-virtualenvs`` or for fine-grained control use
+``--reuse-venv=yes|no|always|never``:
 
 .. code-block:: console
 
     nox -r
     nox --reuse-existing-virtualenvs
-
+    nox --reuse-venv=yes # preferred
 
 If the Noxfile sets ``nox.options.reuse_existing_virtualenvs``, you can override the Noxfile setting from the command line by using ``--no-reuse-existing-virtualenvs``.
+Similarly you can override ``nox.options.reuse_venvs`` from the Noxfile via the command line by using ``--reuse-venv=yes|no|always|never``.
 
-Additionally, you can skip the re-installation of packages when a virtualenv is reused. Use ``-R`` or ``--reuse-existing-virtualenvs --no-install``:
+.. note::
+
+    ``--reuse-existing-virtualenvs`` is a alias for ``--reuse-venv=yes`` and ``--no-reuse-existing-virtualenvs`` is an alias for ``--reuse-venv=no``.
+
+Additionally, you can skip the re-installation of packages when a virtualenv is reused.
+Use ``-R`` or ``--reuse-existing-virtualenvs --no-install`` or ``--reuse-venv=yes --no-install``:
 
 .. code-block:: console
 
     nox -R
     nox --reuse-existing-virtualenvs --no-install
+    nox --reuse-venv=yes --no-install
 
 The ``--no-install`` option causes the following session methods to return early:
 
 - :func:`session.install <nox.sessions.Session.install>`
 - :func:`session.conda_install <nox.sessions.Session.conda_install>`
-- :func:`session.run_always <nox.sessions.Session.run_always>`
+- :func:`session.run_install <nox.sessions.Session.run_install>`
 
-This option has no effect if the virtualenv is not being reused.
+The ``never`` and ``always`` options in ``--reuse-venv`` gives you more fine-grained control
+as it ignores when a ``@nox.session`` has ``reuse_venv=True|False`` defined.
+
+These options have no effect if the virtualenv is not being reused.
 
 .. _opt-running-extra-pythons:
 

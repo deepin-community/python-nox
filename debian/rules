@@ -9,11 +9,14 @@ export PYBUILD_TEST_ARGS=--ignore tests/test_action_helper.py -k "not test_creat
 %:
 	dh $@ --with sphinxdoc --buildsystem=pybuild
 
-override_dh_sphinxdoc:
+execute_before_dh_sphinxdoc:
 ifeq (,$(findstring nodoc, $(DEB_BUILD_OPTIONS)))
 	PYTHONPATH=. python3 -m sphinx -b html -d docs/.build/.doctrees -N docs $(CURDIR)/debian/python-nox-doc/usr/share/doc/python-nox-doc/html
-	dh_sphinxdoc
 endif
 
 execute_before_dh_clean:
 	rm -rf docs/.build
+
+execute_before_dh_installman:
+	PYTHONPATH=$$(pybuild --print build_dir | awk -F ': ' 'NR==1{print $$2}') help2man --no-discard-stderr -n 'Flexible test automation' $(CURDIR)/debian/tmp/usr/bin/nox >$(CURDIR)/nox.1
+	PYTHONPATH=$$(pybuild --print build_dir | awk -F ': ' 'NR==1{print $$2}') help2man --no-discard-stderr -n 'Converts toxfiles to noxfiles' $(CURDIR)/debian/tmp/usr/bin/tox-to-nox >$(CURDIR)/tox-to-nox.1

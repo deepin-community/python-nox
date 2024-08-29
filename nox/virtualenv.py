@@ -14,15 +14,19 @@
 
 from __future__ import annotations
 
+import abc
 import contextlib
+import functools
 import os
 import platform
 import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Mapping
+from pathlib import Path
 from socket import gethostbyname
-from typing import Any, ClassVar, Mapping
+from typing import Any, ClassVar
 
 import nox
 import nox.command
@@ -31,10 +35,37 @@ from nox.logger import logger
 # Problematic environment variables that are stripped from all commands inside
 # of a virtualenv. See https://github.com/theacodes/nox/issues/44
 _BLACKLISTED_ENV_VARS = frozenset(
-    ["PIP_RESPECT_VIRTUALENV", "PIP_REQUIRE_VIRTUALENV", "__PYVENV_LAUNCHER__"]
+    [
+        "PIP_RESPECT_VIRTUALENV",
+        "PIP_REQUIRE_VIRTUALENV",
+        "__PYVENV_LAUNCHER__",
+        "UV_SYSTEM_PYTHON",
+    ]
 )
 _SYSTEM = platform.system()
-_ENABLE_STALENESS_CHECK = "NOX_ENABLE_STALENESS_CHECK" in os.environ
+
+
+def find_uv() -> tuple[bool, str]:
+    uv_on_path = shutil.which("uv")
+
+    # Look for uv in Nox's environment, to handle `pipx install nox[uv]`.
+    with contextlib.suppress(ImportError, FileNotFoundError):
+        from uv import find_uv_bin
+
+        uv_bin = find_uv_bin()
+
+        # If the returned value is the same as calling "uv" already, don't
+        # expand (simpler logging)
+        if uv_on_path and Path(uv_bin).samefile(uv_on_path):
+            return True, "uv"
+
+        return True, uv_bin
+
+    # Fall back to PATH.
+    return uv_on_path is not None, "uv"
+
+
+HAS_UV, UV = find_uv()
 
 
 class InterpreterNotFound(OSError):
@@ -43,7 +74,7 @@ class InterpreterNotFound(OSError):
         self.interpreter = interpreter
 
 
-class ProcessEnv:
+class ProcessEnv(abc.ABC):
     """An environment with a 'bin' directory and a set of 'env' vars."""
 
     location: str
@@ -55,14 +86,16 @@ class ProcessEnv:
     allowed_globals: ClassVar[tuple[Any, ...]] = ()
 
     def __init__(
-        self, bin_paths: None = None, env: Mapping[str, str] | None = None
+        self, bin_paths: None = None, env: Mapping[str, str | None] | None = None
     ) -> None:
         self._bin_paths = bin_paths
-        self.env = os.environ.copy()
         self._reused = False
 
-        if env is not None:
-            self.env.update(env)
+        # Filter envs now so `.env` is dict[str, str] (easier to use)
+        # even though .command's env supports None.
+        env = env or {}
+        env = {**os.environ, **env}
+        self.env = {k: v for k, v in env.items() if v is not None}
 
         for key in _BLACKLISTED_ENV_VARS:
             self.env.pop(key, None)
@@ -84,8 +117,19 @@ class ProcessEnv:
             raise ValueError("The environment does not have a bin directory.")
         return paths[0]
 
+    @abc.abstractmethod
     def create(self) -> bool:
-        raise NotImplementedError("ProcessEnv.create should be overwritten in subclass")
+        """Create a new environment.
+
+        Returns True if the environment is new, and False if it was reused.
+        """
+
+    @property
+    @abc.abstractmethod
+    def venv_backend(self) -> str:
+        """
+        Returns the string used to select this environment.
+        """
 
 
 def locate_via_py(version: str) -> str | None:
@@ -169,6 +213,15 @@ class PassthroughEnv(ProcessEnv):
         """As of now this is only used in conda_install"""
         return CondaEnv.is_offline()  # pragma: no cover
 
+    def create(self) -> bool:
+        """Does nothing, since this is an existing environment. Always returns
+        False since it's always reused."""
+        return False
+
+    @property
+    def venv_backend(self) -> str:
+        return "none"
+
 
 class CondaEnv(ProcessEnv):
     """Conda environment management class.
@@ -192,7 +245,7 @@ class CondaEnv(ProcessEnv):
     """
 
     is_sandboxed = True
-    allowed_globals = ("conda", "mamba")
+    allowed_globals = ("conda", "mamba", "micromamba")
 
     def __init__(
         self,
@@ -209,13 +262,16 @@ class CondaEnv(ProcessEnv):
         self.reuse_existing = reuse_existing
         self.venv_params = venv_params or []
         self.conda_cmd = conda_cmd
-        super().__init__(env={"CONDA_PREFIX": self.location})
+        super().__init__(env={"CONDA_PREFIX": self.location, "VIRTUAL_ENV": None})
 
     def _clean_location(self) -> bool:
         """Deletes existing conda environment"""
+        is_conda = os.path.isdir(os.path.join(self.location, "conda-meta"))
         if os.path.exists(self.location):
-            if self.reuse_existing:
+            if self.reuse_existing and is_conda:
                 return False
+            if not is_conda:
+                shutil.rmtree(self.location)
             else:
                 cmd = [
                     self.conda_cmd,
@@ -226,9 +282,9 @@ class CondaEnv(ProcessEnv):
                     "--all",
                 ]
                 nox.command.run(cmd, silent=True, log=False)
-                # Make sure that location is clean
-                with contextlib.suppress(FileNotFoundError):
-                    shutil.rmtree(self.location)
+            # Make sure that location is clean
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(self.location)
 
         return True
 
@@ -258,6 +314,12 @@ class CondaEnv(ProcessEnv):
             return False
 
         cmd = [self.conda_cmd, "create", "--yes", "--prefix", self.location]
+        if self.conda_cmd == "micromamba" and not any(
+            v.startswith(("--channel=", "-c")) or v == "--channel"
+            for v in self.venv_params
+        ):
+            # Micromamba doesn't have any default channels
+            cmd.append("--channel=conda-forge")
 
         cmd.extend(self.venv_params)
 
@@ -267,7 +329,9 @@ class CondaEnv(ProcessEnv):
         python_dep = f"python={self.interpreter}" if self.interpreter else "python"
         cmd.append(python_dep)
 
-        logger.info(f"Creating conda env in {self.location_name} with {python_dep}")
+        logger.info(
+            f"Creating {self.conda_cmd} env in {self.location_name} with {python_dep}"
+        )
         nox.command.run(cmd, silent=True, log=nox.options.verbose or False)
 
         return True
@@ -288,6 +352,10 @@ class CondaEnv(ProcessEnv):
             return host is None
         except BaseException:  # pragma: no cover
             return True
+
+    @property
+    def venv_backend(self) -> str:
+        return self.conda_cmd
 
 
 class VirtualEnv(ProcessEnv):
@@ -311,6 +379,7 @@ class VirtualEnv(ProcessEnv):
     """
 
     is_sandboxed = True
+    allowed_globals = (UV,)
 
     def __init__(
         self,
@@ -318,7 +387,7 @@ class VirtualEnv(ProcessEnv):
         interpreter: str | None = None,
         reuse_existing: bool = False,
         *,
-        venv: bool = False,
+        venv_backend: str = "virtualenv",
         venv_params: Any = None,
     ):
         self.location_name = location
@@ -326,43 +395,80 @@ class VirtualEnv(ProcessEnv):
         self.interpreter = interpreter
         self._resolved: None | str | InterpreterNotFound = None
         self.reuse_existing = reuse_existing
-        self.venv_or_virtualenv = "venv" if venv else "virtualenv"
+        self._venv_backend = venv_backend
         self.venv_params = venv_params or []
-        super().__init__(env={"VIRTUAL_ENV": self.location})
+        if venv_backend not in {"virtualenv", "venv", "uv"}:
+            msg = f"venv_backend {venv_backend} not recognized"
+            raise ValueError(msg)
+        super().__init__(env={"VIRTUAL_ENV": self.location, "CONDA_PREFIX": None})
 
     def _clean_location(self) -> bool:
         """Deletes any existing virtual environment"""
         if os.path.exists(self.location):
-            if self.reuse_existing and not _ENABLE_STALENESS_CHECK:
-                return False
             if (
                 self.reuse_existing
                 and self._check_reused_environment_type()
                 and self._check_reused_environment_interpreter()
             ):
                 return False
-            else:
-                shutil.rmtree(self.location)
-
+            shutil.rmtree(self.location)
         return True
 
-    def _check_reused_environment_type(self) -> bool:
-        """Check if reused environment type is the same."""
+    def _read_pyvenv_cfg(self) -> dict[str, str] | None:
+        """Read a pyvenv.cfg file into dict, returns None if missing."""
         path = os.path.join(self.location, "pyvenv.cfg")
-        if not os.path.isfile(path):
-            # virtualenv < 20.0 does not create pyvenv.cfg
+        with contextlib.suppress(FileNotFoundError), open(path) as fp:
+            parts = (x.partition("=") for x in fp if "=" in x)
+            return {k.strip(): v.strip() for k, _, v in parts}
+        return None
+
+    def _check_reused_environment_type(self) -> bool:
+        """Check if reused environment type is the same or equivalent."""
+
+        config = self._read_pyvenv_cfg()
+        # virtualenv < 20.0 does not create pyvenv.cfg
+        if config is None:
+            old_env = "virtualenv"
+        elif "uv" in config or "gourgeist" in config:
+            old_env = "uv"
+        elif "virtualenv" in config:
             old_env = "virtualenv"
         else:
-            pattern = re.compile("virtualenv[ \t]*=")
-            with open(path) as fp:
-                old_env = (
-                    "virtualenv" if any(pattern.match(line) for line in fp) else "venv"
-                )
-        return old_env == self.venv_or_virtualenv
+            old_env = "venv"
+
+        # Can't detect mamba separately, but shouldn't matter
+        if os.path.isdir(os.path.join(self.location, "conda-meta")):
+            return False
+
+        # Matching is always true
+        if old_env == self.venv_backend:
+            return True
+
+        # venv family with pip installed
+        if {old_env, self.venv_backend} <= {"virtualenv", "venv"}:
+            return True
+
+        # Switching to "uv" is safe, but not the other direction (no pip)
+        if old_env in {"virtualenv", "venv"} and self.venv_backend == "uv":
+            return True
+
+        return False
 
     def _check_reused_environment_interpreter(self) -> bool:
-        """Check if reused environment interpreter is the same."""
-        original = self._read_base_prefix_from_pyvenv_cfg()
+        """
+        Check if reused environment interpreter is the same. Currently only checks if
+        NOX_ENABLE_STALENESS_CHECK is set in the environment. See
+
+        * https://github.com/wntrblm/nox/issues/449#issuecomment-860030890
+        * https://github.com/wntrblm/nox/issues/441
+        * https://github.com/pypa/virtualenv/issues/2130
+        """
+        if not os.environ.get("NOX_ENABLE_STALENESS_CHECK", ""):
+            return True
+
+        config = self._read_pyvenv_cfg() or {}
+        original = config.get("base-prefix", None)
+
         program = (
             "import sys; sys.stdout.write(getattr(sys, 'real_prefix', sys.base_prefix))"
         )
@@ -378,18 +484,11 @@ class VirtualEnv(ProcessEnv):
             ["python", "-c", program], silent=True, log=False, paths=self.bin_paths
         )
 
-        return original == created
-
-    def _read_base_prefix_from_pyvenv_cfg(self) -> str | None:
-        """Return the base-prefix entry from pyvenv.cfg, if present."""
-        path = os.path.join(self.location, "pyvenv.cfg")
-        if os.path.isfile(path):
-            with open(path) as io:
-                for line in io:
-                    key, _, value = line.partition("=")
-                    if key.strip() == "base-prefix":
-                        return value.strip()
-        return None
+        return (
+            os.path.exists(original)
+            and os.path.exists(created)
+            and os.path.samefile(original, created)
+        )
 
     @property
     def _resolved_interpreter(self) -> str:
@@ -473,10 +572,18 @@ class VirtualEnv(ProcessEnv):
 
             return False
 
-        if self.venv_or_virtualenv == "virtualenv":
+        if self.venv_backend == "virtualenv":
             cmd = [sys.executable, "-m", "virtualenv", self.location]
             if self.interpreter:
                 cmd.extend(["-p", self._resolved_interpreter])
+        elif self.venv_backend == "uv":
+            cmd = [
+                UV,
+                "venv",
+                "-p",
+                self._resolved_interpreter if self.interpreter else sys.executable,
+                self.location,
+            ]
         else:
             cmd = [self._resolved_interpreter, "-m", "venv", self.location]
         cmd.extend(self.venv_params)
@@ -484,9 +591,34 @@ class VirtualEnv(ProcessEnv):
         resolved_interpreter_name = os.path.basename(self._resolved_interpreter)
 
         logger.info(
-            f"Creating virtual environment ({self.venv_or_virtualenv}) using"
+            f"Creating virtual environment ({self.venv_backend}) using"
             f" {resolved_interpreter_name} in {self.location_name}"
         )
         nox.command.run(cmd, silent=True, log=nox.options.verbose or False)
 
         return True
+
+    @property
+    def venv_backend(self) -> str:
+        return self._venv_backend
+
+
+ALL_VENVS: dict[str, Callable[..., ProcessEnv]] = {
+    "conda": functools.partial(CondaEnv, conda_cmd="conda"),
+    "mamba": functools.partial(CondaEnv, conda_cmd="mamba"),
+    "micromamba": functools.partial(CondaEnv, conda_cmd="micromamba"),
+    "virtualenv": functools.partial(VirtualEnv, venv_backend="virtualenv"),
+    "venv": functools.partial(VirtualEnv, venv_backend="venv"),
+    "uv": functools.partial(VirtualEnv, venv_backend="uv"),
+    "none": PassthroughEnv,
+}
+
+# Any environment in this dict could be missing, and is only available if the
+# value is True. If an environment is always available, it should not be in this
+# dict. "virtualenv" is not considered optional since it's a dependency of nox.
+OPTIONAL_VENVS = {
+    "conda": shutil.which("conda") is not None,
+    "mamba": shutil.which("mamba") is not None,
+    "micromamba": shutil.which("micromamba") is not None,
+    "uv": HAS_UV,
+}

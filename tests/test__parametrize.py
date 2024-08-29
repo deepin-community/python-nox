@@ -35,8 +35,7 @@ def test_param_eq(param, other, expected):
 
 
 def test_param_eq_fail():
-    with pytest.raises(NotImplementedError):
-        _parametrize.Param() == "a"  # noqa: B015
+    assert _parametrize.Param() != "a"
 
 
 def test_parametrize_decorator_one():
@@ -166,7 +165,7 @@ def test_parametrize_decorator_multiple_and_stack():
 
 
 def test_generate_calls_simple():
-    f = mock.Mock()
+    f = mock.Mock(should_warn={}, tags=[])
     f.__name__ = "f"
     f.some_prop = 42
 
@@ -198,7 +197,7 @@ def test_generate_calls_simple():
 
 
 def test_generate_calls_multiple_args():
-    f = mock.Mock()
+    f = mock.Mock(should_warn=None, tags=None)
     f.__name__ = "f"
 
     arg_names = ("foo", "abc")
@@ -224,7 +223,7 @@ def test_generate_calls_multiple_args():
 
 
 def test_generate_calls_ids():
-    f = mock.Mock()
+    f = mock.Mock(should_warn={}, tags=[])
     f.__name__ = "f"
 
     arg_names = ("foo",)

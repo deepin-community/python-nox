@@ -7,6 +7,7 @@ Uploaders:
 Build-Depends:
  debhelper-compat (= 13),
  dh-sequence-python3,
+ help2man,
  pybuild-plugin-pyproject,
  python3-all,
  python3-argcomplete,
@@ -19,7 +20,7 @@ Build-Depends:
  python3-sphinx-tabs,
  python3-venv,
  tox,
-Standards-Version: 4.6.2
+Standards-Version: 4.7.0
 Homepage: https://github.com/theacodes/nox/
 Vcs-Browser: https://salsa.debian.org/python-team/packages/python-nox
 Vcs-Git: https://salsa.debian.org/python-team/packages/python-nox.git

@@ -21,26 +21,35 @@ import hashlib
 import os
 import pathlib
 import re
+import shutil
+import subprocess
 import sys
 import unicodedata
-from types import TracebackType
-from typing import (
-    TYPE_CHECKING,
-    Any,
+from collections.abc import (
     Callable,
     Generator,
     Iterable,
     Mapping,
-    NoReturn,
     Sequence,
+)
+from types import TracebackType
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    NoReturn,
 )
 
 import nox.command
+import nox.virtualenv
 from nox._decorators import Func
 from nox.logger import logger
+from nox.popen import DEFAULT_INTERRUPT_TIMEOUT, DEFAULT_TERMINATE_TIMEOUT
 from nox.virtualenv import CondaEnv, PassthroughEnv, ProcessEnv, VirtualEnv
 
 if TYPE_CHECKING:
+    from typing import IO
+
+    from nox.command import ExternalType
     from nox.manifest import Manifest
 
 
@@ -85,7 +94,7 @@ def _normalize_path(envdir: str, path: str | bytes) -> str:
     return full_path
 
 
-def _dblquote_pkg_install_args(args: tuple[str, ...]) -> tuple[str, ...]:
+def _dblquote_pkg_install_args(args: Iterable[str]) -> tuple[str, ...]:
     """Double-quote package install arguments in case they contain '>' or '<' symbols"""
 
     # routine used to handle a single arg
@@ -191,6 +200,14 @@ class Session:
         return venv
 
     @property
+    def venv_backend(self) -> str:
+        """The venv_backend selected."""
+        venv = self._runner.venv
+        if venv is None:
+            return "none"
+        return venv.venv_backend
+
+    @property
     def python(self) -> str | Sequence[str] | bool | None:
         """The python version passed into ``@nox.session``."""
         return self._runner.func.python
@@ -258,19 +275,28 @@ class Session:
     cd = chdir
     """An alias for :meth:`chdir`."""
 
-    def _run_func(
-        self, func: Callable[..., Any], args: Iterable[Any], kwargs: Mapping[str, Any]
-    ) -> Any:
+    def _run_func(self, func: Callable[..., Any], args: Iterable[Any]) -> Any:
         """Legacy support for running a function through :func`run`."""
-        self.log(f"{func}(args={args!r}, kwargs={kwargs!r})")
+        self.log(f"{func}(args={args!r})")
         try:
-            return func(*args, **kwargs)
+            return func(*args)
         except Exception as e:
             logger.exception(f"Function {func!r} raised {e!r}.")
             raise nox.command.CommandFailed() from e
 
     def run(
-        self, *args: str, env: Mapping[str, str] | None = None, **kwargs: Any
+        self,
+        *args: str | os.PathLike[str],
+        env: Mapping[str, str | None] | None = None,
+        include_outer_env: bool = True,
+        silent: bool = False,
+        success_codes: Iterable[int] | None = None,
+        log: bool = True,
+        external: ExternalType | None = None,
+        stdout: int | IO[str] | None = None,
+        stderr: int | IO[str] = subprocess.STDOUT,
+        interrupt_timeout: float | None = DEFAULT_INTERRUPT_TIMEOUT,
+        terminate_timeout: float | None = DEFAULT_TERMINATE_TIMEOUT,
     ) -> Any | None:
         """Run a command.
 
@@ -335,8 +361,14 @@ class Session:
             print("Current Git commit is", out.strip())
 
         :param env: A dictionary of environment variables to expose to the
-            command. By default, all environment variables are passed.
+            command. By default, all environment variables are passed. You
+            can block an environment variable from the outer environment by
+            setting it to None.
         :type env: dict or None
+        :param include_outer_env: Boolean parameter that determines if the
+            environment variables from the nox invocation environment should
+            be passed to the command. ``True`` by default.
+        :type include_outer_env: bool
         :param bool silent: Silence command output, unless the command fails.
             If ``True``, returns the command output (unless the command fails).
             ``False`` by default.
@@ -369,20 +401,49 @@ class Session:
         if not args:
             raise ValueError("At least one argument required to run().")
 
+        if len(args) == 1 and isinstance(args[0], (list, tuple)):
+            msg = "First argument to `session.run` is a list. Did you mean to use `session.run(*args)`?"
+            raise ValueError(msg)
+
         if self._runner.global_config.install_only:
             logger.info(f"Skipping {args[0]} run, as --install-only is set.")
             return None
 
-        return self._run(*args, env=env, **kwargs)
+        return self._run(
+            *args,
+            env=env,
+            include_outer_env=include_outer_env,
+            silent=silent,
+            success_codes=success_codes,
+            log=log,
+            external=external,
+            stdout=stdout,
+            stderr=stderr,
+            interrupt_timeout=interrupt_timeout,
+            terminate_timeout=terminate_timeout,
+        )
 
-    def run_always(
-        self, *args: str, env: Mapping[str, str] | None = None, **kwargs: Any
+    def run_install(
+        self,
+        *args: str | os.PathLike[str],
+        env: Mapping[str, str | None] | None = None,
+        include_outer_env: bool = True,
+        silent: bool = False,
+        success_codes: Iterable[int] | None = None,
+        log: bool = True,
+        external: ExternalType | None = None,
+        stdout: int | IO[str] | None = None,
+        stderr: int | IO[str] = subprocess.STDOUT,
+        interrupt_timeout: float | None = DEFAULT_INTERRUPT_TIMEOUT,
+        terminate_timeout: float | None = DEFAULT_TERMINATE_TIMEOUT,
     ) -> Any | None:
-        """Run a command **always**.
+        """Run a command in the install step.
 
         This is a variant of :meth:`run` that runs even in the presence of
         ``--install-only``. This method returns early if ``--no-install`` is
-        specified and the virtualenv is being reused.
+        specified and the virtualenv is being reused. (In nox 2023.04.22 and
+        earlier, this was called ``run_always``, and that continues to be
+        available as an alias.)
 
         Here are some cases where this method is useful:
 
@@ -394,6 +455,10 @@ class Session:
         :param env: A dictionary of environment variables to expose to the
             command. By default, all environment variables are passed.
         :type env: dict or None
+        :param include_outer_env: Boolean parameter that determines if the
+            environment variables from the nox invocation environment should
+            be passed to the command. ``True`` by default.
+        :type include_outer_env: bool
         :param bool silent: Silence command output, unless the command fails.
             ``False`` by default.
         :param success_codes: A list of return codes that are considered
@@ -424,46 +489,131 @@ class Session:
             return None
 
         if not args:
-            raise ValueError("At least one argument required to run_always().")
+            raise ValueError("At least one argument required to run_install().")
 
-        return self._run(*args, env=env, **kwargs)
+        return self._run(
+            *args,
+            env=env,
+            include_outer_env=include_outer_env,
+            silent=silent,
+            success_codes=success_codes,
+            log=log,
+            external=external,
+            stdout=stdout,
+            stderr=stderr,
+            interrupt_timeout=interrupt_timeout,
+            terminate_timeout=terminate_timeout,
+        )
+
+    def run_always(
+        self,
+        *args: str | os.PathLike[str],
+        env: Mapping[str, str | None] | None = None,
+        include_outer_env: bool = True,
+        silent: bool = False,
+        success_codes: Iterable[int] | None = None,
+        log: bool = True,
+        external: ExternalType | None = None,
+        stdout: int | IO[str] | None = None,
+        stderr: int | IO[str] = subprocess.STDOUT,
+        interrupt_timeout: float | None = DEFAULT_INTERRUPT_TIMEOUT,
+        terminate_timeout: float | None = DEFAULT_TERMINATE_TIMEOUT,
+    ) -> Any | None:
+        """This is an alias to ``run_install``, which better describes the use case.
+
+        :meta private:
+        """
+
+        return self.run_install(
+            *args,
+            env=env,
+            include_outer_env=include_outer_env,
+            silent=silent,
+            success_codes=success_codes,
+            log=log,
+            external=external,
+            stdout=stdout,
+            stderr=stderr,
+            interrupt_timeout=interrupt_timeout,
+            terminate_timeout=terminate_timeout,
+        )
 
     def _run(
-        self, *args: str, env: Mapping[str, str] | None = None, **kwargs: Any
+        self,
+        *args: str | os.PathLike[str],
+        env: Mapping[str, str | None] | None = None,
+        include_outer_env: bool,
+        silent: bool,
+        success_codes: Iterable[int] | None,
+        log: bool,
+        external: ExternalType | None,
+        stdout: int | IO[str] | None,
+        stderr: int | IO[str],
+        interrupt_timeout: float | None,
+        terminate_timeout: float | None,
     ) -> Any:
         """Like run(), except that it runs even if --install-only is provided."""
         # Legacy support - run a function given.
         if callable(args[0]):
-            return self._run_func(args[0], args[1:], kwargs)
+            return self._run_func(args[0], args[1:])  # type: ignore[unreachable]
+
+        # Using `"uv"` when `uv` is the backend is guaranteed to work, even if it was co-installed with nox.
+        if (
+            self.virtualenv.venv_backend == "uv"
+            and args[0] == "uv"
+            and nox.virtualenv.UV != "uv"
+            and shutil.which("uv", path=self.bin) is None  # Session uv takes priority
+        ):
+            args = (nox.virtualenv.UV, *args[1:])
 
         # Combine the env argument with our virtualenv's env vars.
-        if env is not None:
-            overlay_env = env
-            env = self.env.copy()
-            env.update(overlay_env)
-        else:
-            env = self.env
+        if include_outer_env:
+            overlay_env = env or {}
+            env = {**self.env, **overlay_env}
 
         # If --error-on-external-run is specified, error on external programs.
-        if self._runner.global_config.error_on_external_run:
-            kwargs.setdefault("external", "error")
+        if self._runner.global_config.error_on_external_run and external is None:
+            external = "error"
 
         # Allow all external programs when running outside a sandbox.
-        if not self.virtualenv.is_sandboxed:
-            kwargs["external"] = True
+        if (
+            not self.virtualenv.is_sandboxed
+            or args[0] in self.virtualenv.allowed_globals
+        ):
+            external = True
 
-        if args[0] in self.virtualenv.allowed_globals:
-            kwargs["external"] = True
+        if external is None:
+            external = False
 
         # Run a shell command.
-        return nox.command.run(args, env=env, paths=self.bin_paths, **kwargs)
+        return nox.command.run(
+            args,
+            env=env,
+            paths=self.bin_paths,
+            silent=silent,
+            success_codes=success_codes,
+            log=log,
+            external=external,
+            stdout=stdout,
+            stderr=stderr,
+            interrupt_timeout=interrupt_timeout,
+            terminate_timeout=terminate_timeout,
+        )
 
     def conda_install(
         self,
         *args: str,
         auto_offline: bool = True,
         channel: str | Sequence[str] = "",
-        **kwargs: Any,
+        env: Mapping[str, str] | None = None,
+        include_outer_env: bool = True,
+        silent: bool | None = None,
+        success_codes: Iterable[int] | None = None,
+        log: bool = True,
+        stdout: int | IO[str] | None = None,
+        stderr: int | IO[str] = subprocess.STDOUT,
+        interrupt_timeout: float | None = DEFAULT_INTERRUPT_TIMEOUT,
+        terminate_timeout: float | None = DEFAULT_TERMINATE_TIMEOUT,
     ) -> None:
         """Install invokes `conda install`_ to install packages inside of the
         session's environment.
@@ -492,7 +642,9 @@ class Session:
 
         You can specify a conda channel using `channel=`; a falsey value will
         not change the current channels. You can specify a list of channels if
-        needed.
+        needed. It is highly recommended to specify this; micromamba does not
+        set default channels, and default channels vary for conda. Note that
+        "defaults" is also not permissivly licenced like "conda-forge" is.
 
         Additional keyword args are the same as for :meth:`run`.
 
@@ -503,7 +655,7 @@ class Session:
         prefix_args: tuple[str, ...] = ()
         if isinstance(venv, CondaEnv):
             prefix_args = ("--prefix", venv.location)
-        elif not isinstance(venv, PassthroughEnv):  # pragma: no cover
+        elif not isinstance(venv, PassthroughEnv):
             raise ValueError(
                 "A session without a conda environment can not install dependencies"
                 " from conda."
@@ -512,14 +664,16 @@ class Session:
         if not args:
             raise ValueError("At least one argument required to install().")
 
-        if self._runner.global_config.no_install and venv._reused:
-            return None
+        if self._runner.global_config.no_install and (
+            isinstance(venv, PassthroughEnv) or venv._reused
+        ):
+            return
 
         # Escape args that should be (conda-specific; pip install does not need this)
         args = _dblquote_pkg_install_args(args)
 
-        if "silent" not in kwargs:
-            kwargs["silent"] = True
+        if silent is None:
+            silent = True
 
         extraopts: list[str] = []
         if auto_offline and venv.is_offline():
@@ -542,11 +696,32 @@ class Session:
             *extraopts,
             *prefix_args,
             *args,
+            env=env,
+            include_outer_env=include_outer_env,
+            silent=silent,
+            success_codes=success_codes,
+            log=log,
             external="error",
-            **kwargs,
+            stdout=stdout,
+            stderr=stderr,
+            interrupt_timeout=interrupt_timeout,
+            terminate_timeout=terminate_timeout,
         )
 
-    def install(self, *args: str, **kwargs: Any) -> None:
+    def install(
+        self,
+        *args: str,
+        env: Mapping[str, str] | None = None,
+        include_outer_env: bool = True,
+        silent: bool | None = None,
+        success_codes: Iterable[int] | None = None,
+        log: bool = True,
+        external: ExternalType | None = None,
+        stdout: int | IO[str] | None = None,
+        stderr: int | IO[str] = subprocess.STDOUT,
+        interrupt_timeout: float | None = DEFAULT_INTERRUPT_TIMEOUT,
+        terminate_timeout: float | None = DEFAULT_TERMINATE_TIMEOUT,
+    ) -> None:
         """Install invokes `pip`_ to install packages inside of the session's
         virtualenv.
 
@@ -586,6 +761,8 @@ class Session:
                 "A session without a virtualenv can not install dependencies."
             )
         if isinstance(venv, PassthroughEnv):
+            if self._runner.global_config.no_install:
+                return
             raise ValueError(
                 f"Session {self.name} does not have a virtual environment, so use of"
                 " session.install() is no longer allowed since it would modify the"
@@ -596,12 +773,29 @@ class Session:
             raise ValueError("At least one argument required to install().")
 
         if self._runner.global_config.no_install and venv._reused:
-            return None
+            return
 
-        if "silent" not in kwargs:
-            kwargs["silent"] = True
+        if silent is None:
+            silent = True
 
-        self._run("python", "-m", "pip", "install", *args, external="error", **kwargs)
+        if isinstance(venv, VirtualEnv) and venv.venv_backend == "uv":
+            cmd = ["uv", "pip", "install"]
+        else:
+            cmd = ["python", "-m", "pip", "install"]
+        self._run(
+            *cmd,
+            *args,
+            env=env,
+            include_outer_env=include_outer_env,
+            external="error",
+            silent=silent,
+            success_codes=success_codes,
+            log=log,
+            stdout=stdout,
+            stderr=stderr,
+            interrupt_timeout=interrupt_timeout,
+            terminate_timeout=terminate_timeout,
+        )
 
     def notify(
         self,
@@ -665,7 +859,7 @@ class SessionRunner:
     def __init__(
         self,
         name: str,
-        signatures: list[str],
+        signatures: Sequence[str],
         func: Func,
         global_config: argparse.Namespace,
         manifest: Manifest,
@@ -703,50 +897,90 @@ class SessionRunner:
         return _normalize_path(self.global_config.envdir, self.friendly_name)
 
     def _create_venv(self) -> None:
-        backend = (
+        reuse_existing = self.reuse_existing_venv()
+
+        backends = (
             self.global_config.force_venv_backend
             or self.func.venv_backend
             or self.global_config.default_venv_backend
-        )
+            or "virtualenv"
+        ).split("|")
+
+        # Support fallback backends
+        for bk in backends:
+            if bk not in nox.virtualenv.ALL_VENVS:
+                msg = f"Expected venv_backend one of {list(nox.virtualenv.ALL_VENVS)!r}, but got {bk!r}."
+                raise ValueError(msg)
+
+        for bk in backends[:-1]:
+            if bk not in nox.virtualenv.OPTIONAL_VENVS:
+                msg = f"Only optional backends ({list(nox.virtualenv.OPTIONAL_VENVS)!r}) may have a fallback, {bk!r} is not optional."
+                raise ValueError(msg)
+
+        for bk in backends:
+            if nox.virtualenv.OPTIONAL_VENVS.get(bk, True):
+                backend = bk
+                break
+        else:
+            msg = f"No backends present, looked for {backends!r}."
+            raise ValueError(msg)
 
         if backend == "none" or self.func.python is False:
-            self.venv = PassthroughEnv()
-            return
-
-        reuse_existing = (
-            self.func.reuse_venv or self.global_config.reuse_existing_virtualenvs
-        )
-
-        if backend is None or backend == "virtualenv":
-            self.venv = VirtualEnv(
-                self.envdir,
-                interpreter=self.func.python,  # type: ignore[arg-type]
-                reuse_existing=reuse_existing,
-                venv_params=self.func.venv_params,
-            )
-        elif backend in {"conda", "mamba"}:
-            self.venv = CondaEnv(
-                self.envdir,
-                interpreter=self.func.python,  # type: ignore[arg-type]
-                reuse_existing=reuse_existing,
-                venv_params=self.func.venv_params,
-                conda_cmd=backend,
-            )
-        elif backend == "venv":
-            self.venv = VirtualEnv(
-                self.envdir,
-                interpreter=self.func.python,  # type: ignore[arg-type]
-                reuse_existing=reuse_existing,
-                venv=True,
-                venv_params=self.func.venv_params,
-            )
+            self.venv = nox.virtualenv.ALL_VENVS["none"]()
         else:
-            raise ValueError(
-                "Expected venv_backend one of ('virtualenv', 'conda', 'mamba',"
-                f" 'venv'), but got '{backend}'."
+            self.venv = nox.virtualenv.ALL_VENVS[backend](
+                self.envdir,
+                interpreter=self.func.python,
+                reuse_existing=reuse_existing,
+                venv_params=self.func.venv_params,
             )
 
         self.venv.create()
+
+    def reuse_existing_venv(self) -> bool:
+        """
+        Determines whether to reuse an existing virtual environment.
+
+        The decision matrix is as follows:
+
+        +--------------------------+-----------------+-------------+
+        | global_config.reuse_venv | func.reuse_venv | Reuse venv? |
+        +==========================+=================+=============+
+        | "always"                 | N/A             | Yes         |
+        +--------------------------+-----------------+-------------+
+        | "never"                  | N/A             | No          |
+        +--------------------------+-----------------+-------------+
+        | "yes"                    | True|None       | Yes         |
+        +--------------------------+-----------------+-------------+
+        | "yes"                    | False           | No          |
+        +--------------------------+-----------------+-------------+
+        | "no"                     | True            | Yes         |
+        +--------------------------+-----------------+-------------+
+        | "no"                     | False|None      | No          |
+        +--------------------------+-----------------+-------------+
+
+        Summary
+        ~~~~~~~
+        - "always" forces reuse regardless of `func.reuse_venv`.
+        - "never" forces recreation regardless of `func.reuse_venv`.
+        - "yes" and "no" respect `func.reuse_venv` being ``False`` or ``True`` respectively.
+
+        Returns:
+            bool: True if the existing virtual environment should be reused, False otherwise.
+        """
+
+        return any(
+            (
+                # "always" forces reuse regardless of func.reuse_venv
+                self.global_config.reuse_venv == "always",
+                # Respect func.reuse_venv when it's explicitly True, unless global_config is "never"
+                self.func.reuse_venv is True
+                and self.global_config.reuse_venv != "never",
+                # Delegate to reuse ("yes") when func.reuse_venv is not explicitly False
+                self.func.reuse_venv is not False
+                and self.global_config.reuse_venv == "yes",
+            )
+        )
 
     def execute(self) -> Result:
         logger.warning(f"Running session {self.friendly_name}")

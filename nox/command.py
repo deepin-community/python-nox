@@ -17,16 +17,24 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import subprocess
 import sys
-from typing import Any, Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from nox.logger import logger
-from nox.popen import popen
+from nox.popen import DEFAULT_INTERRUPT_TIMEOUT, DEFAULT_TERMINATE_TIMEOUT, popen
 
-if sys.version_info < (3, 8):  # pragma: no cover
+if sys.version_info < (3, 8):
     from typing_extensions import Literal
-else:  # pragma: no cover
+else:
     from typing import Literal
+
+TYPE_CHECKING = False
+
+if TYPE_CHECKING:
+    from typing import IO
+
+ExternalType = Literal["error", True, False]
 
 
 class CommandFailed(Exception):
@@ -37,48 +45,51 @@ class CommandFailed(Exception):
         self.reason = reason
 
 
-def which(program: str, paths: list[str] | None) -> str:
+def which(program: str | os.PathLike[str], paths: Sequence[str] | None) -> str:
     """Finds the full path to an executable."""
     if paths is not None:
         full_path = shutil.which(program, path=os.pathsep.join(paths))
         if full_path:
-            return full_path
+            return os.fspath(full_path)
 
     full_path = shutil.which(program)
     if full_path:
-        return full_path
+        return os.fspath(full_path)
 
     logger.error(f"Program {program} not found.")
     raise CommandFailed(f"Program {program} not found")
 
 
-def _clean_env(env: dict[str, str] | None) -> dict[str, str] | None:
+def _clean_env(env: Mapping[str, str | None] | None = None) -> dict[str, str] | None:
     if env is None:
         return None
 
-    clean_env = {}
+    clean_env = {k: v for k, v in env.items() if v is not None}
 
     # Ensure systemroot is passed down, otherwise Windows will explode.
-    clean_env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", "")
+    if sys.platform == "win32":
+        clean_env.setdefault("SYSTEMROOT", os.environ.get("SYSTEMROOT", ""))
 
-    clean_env.update(env)
     return clean_env
 
 
-def _shlex_join(args: Sequence[str]) -> str:
+def _shlex_join(args: Sequence[str | os.PathLike[str]]) -> str:
     return " ".join(shlex.quote(os.fspath(arg)) for arg in args)
 
 
 def run(
-    args: Sequence[str],
+    args: Sequence[str | os.PathLike[str]],
     *,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | None] | None = None,
     silent: bool = False,
-    paths: list[str] | None = None,
+    paths: Sequence[str] | None = None,
     success_codes: Iterable[int] | None = None,
     log: bool = True,
-    external: Literal["error"] | bool = False,
-    **popen_kws: Any,
+    external: ExternalType = False,
+    stdout: int | IO[str] | None = None,
+    stderr: int | IO[str] = subprocess.STDOUT,
+    interrupt_timeout: float | None = DEFAULT_INTERRUPT_TIMEOUT,
+    terminate_timeout: float | None = DEFAULT_TERMINATE_TIMEOUT,
 ) -> str | bool:
     """Run a command-line program."""
 
@@ -88,7 +99,8 @@ def run(
     cmd, args = args[0], args[1:]
     full_cmd = f"{cmd} {_shlex_join(args)}"
 
-    cmd_path = which(cmd, paths)
+    cmd_path = which(os.fspath(cmd), paths)
+    str_args = [os.fspath(arg) for arg in args]
 
     if log:
         logger.info(full_cmd)
@@ -115,7 +127,13 @@ def run(
 
     try:
         return_code, output = popen(
-            [cmd_path, *list(args)], silent=silent, env=env, **popen_kws
+            [cmd_path, *str_args],
+            silent=silent,
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+            interrupt_timeout=interrupt_timeout,
+            terminate_timeout=terminate_timeout,
         )
 
         if return_code not in success_codes:

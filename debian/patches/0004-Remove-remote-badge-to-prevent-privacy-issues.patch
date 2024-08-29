@@ -1,0 +1,23 @@
+From: Michael Fladischer <fladi@debian.org>
+Date: Thu, 18 Jul 2024 17:38:28 +0000
+Subject: Remove remote badge to prevent privacy issues.
+
+---
+ docs/tutorial.rst | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/docs/tutorial.rst b/docs/tutorial.rst
+index 633b625..328e017 100644
+--- a/docs/tutorial.rst
++++ b/docs/tutorial.rst
+@@ -561,10 +561,6 @@ For this point you can:
+ For any projects using Nox, you may add its official badge somewhere prominent
+ like the README.
+ 
+-.. image:: https://img.shields.io/badge/%F0%9F%A6%8A-Nox-D85E00.svg
+-   :alt: Nox
+-   :target: https://github.com/wntrblm/nox
+-
+ .. tabs::
+ 
+    .. tab:: Markdown

@@ -40,6 +40,7 @@ session_func.python = None
 session_func.venv_backend = None
 session_func.should_warn = {}
 session_func.tags = []
+session_func.default = True
 
 
 def session_func_with_python():
@@ -48,6 +49,7 @@ def session_func_with_python():
 
 session_func_with_python.python = "3.8"
 session_func_with_python.venv_backend = None
+session_func_with_python.default = True
 
 
 def session_func_venv_pythons_warning():
@@ -105,6 +107,11 @@ def reset_needs_version():
         yield
     finally:
         nox.needs_version = None
+
+
+@pytest.fixture
+def reset_global_nox_options():
+    nox.options = _options.options.noxfile_namespace()
 
 
 def test_load_nox_module_needs_version_static(reset_needs_version, tmp_path):
@@ -313,6 +320,66 @@ def test_filter_manifest_tags_not_found(tags, caplog):
     return_value = tasks.filter_manifest(manifest, config)
     assert return_value == 3
     assert "Tag selection caused no sessions to be selected." in caplog.text
+
+
+def test_merge_sessions_and_tags(reset_global_nox_options, generate_noxfile_options):
+    @nox.session(tags=["foobar"])
+    def test():
+        pass
+
+    @nox.session(tags=["foobar"])
+    def bar():
+        pass
+
+    noxfile_path = generate_noxfile_options(reuse_existing_virtualenvs=True)
+    config = _options.options.namespace(
+        noxfile=noxfile_path,
+        sessions=None,
+        pythons=(),
+        posargs=[],
+        tags=["foobar"],
+    )
+
+    nox_module = tasks.load_nox_module(config)
+    tasks.merge_noxfile_options(nox_module, config)
+    manifest = Manifest({"test": test, "bar": bar}, config)
+    return_value = tasks.filter_manifest(manifest, config)
+    assert return_value is manifest
+    assert len(manifest) == 2
+
+
+@pytest.mark.parametrize("selection", [None, ["qux"], ["quuz"], ["qux", "quuz"]])
+def test_default_false(selection):
+    @nox.session()
+    def qux():
+        pass
+
+    @nox.session()
+    def quux():
+        pass
+
+    @nox.session(default=False)
+    def quuz():
+        pass
+
+    @nox.session(default=False)
+    def corge():
+        pass
+
+    config = _options.options.namespace(sessions=selection, pythons=(), posargs=[])
+    manifest = Manifest(
+        {
+            "qux": qux,
+            "quux": quux,
+            "quuz": quuz,
+            "corge": corge,
+        },
+        config,
+    )
+    return_value = tasks.filter_manifest(manifest, config)
+    assert return_value is manifest
+    expected = 2 if selection is None else len(selection)
+    assert len(manifest) == expected
 
 
 def test_honor_list_request_noop():

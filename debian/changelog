@@ -1,3 +1,16 @@
+python-nox (2024.04.15-1) unstable; urgency=low
+
+  * New upstream version 2024.04.15
+  * Refresh patches and drop upstreamed ones.
+  * Bump Standards-Version to 4.7.0.
+  * Update year in d/copyright.
+  * Add patch to remove remote image shield to prevent privacy issues.
+  * Install pyproject.toml as testfile so tests are run in the build path.
+  * Use help2man to generate up-to-date man pages.
+  * Simplify d/rules by using execute_ target instead of override.
+
+ -- Michael Fladischer <fladi@debian.org>  Thu, 18 Jul 2024 19:53:49 +0000
+
 python-nox (2023.04.22-2) unstable; urgency=medium
 
   * Team upload.

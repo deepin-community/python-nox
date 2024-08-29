@@ -18,7 +18,11 @@ import contextlib
 import locale
 import subprocess
 import sys
-from typing import IO, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import IO
+
+DEFAULT_INTERRUPT_TIMEOUT = 0.3
+DEFAULT_TERMINATE_TIMEOUT = 0.2
 
 
 def shutdown_process(
@@ -63,8 +67,8 @@ def popen(
     silent: bool = False,
     stdout: int | IO[str] | None = None,
     stderr: int | IO[str] = subprocess.STDOUT,
-    interrupt_timeout: float | None = 0.3,
-    terminate_timeout: float | None = 0.2,
+    interrupt_timeout: float | None = DEFAULT_INTERRUPT_TIMEOUT,
+    terminate_timeout: float | None = DEFAULT_TERMINATE_TIMEOUT,
 ) -> tuple[int, str]:
     if silent and stdout is not None:
         raise ValueError(

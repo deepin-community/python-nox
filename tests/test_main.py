@@ -28,9 +28,9 @@ import nox._options
 import nox.registry
 import nox.sessions
 
-try:
-    import importlib.metadata as metadata
-except ImportError:
+if sys.version_info >= (3, 8):
+    from importlib import metadata
+else:
     import importlib_metadata as metadata
 
 
@@ -61,6 +61,7 @@ def test_main_no_args(monkeypatch):
         assert config.sessions is None
         assert not config.no_venv
         assert not config.reuse_existing_virtualenvs
+        assert not config.reuse_venv
         assert not config.stop_on_first_error
         assert config.posargs == []
 
@@ -101,6 +102,7 @@ def test_main_long_form_args():
         assert config.force_venv_backend == "none"
         assert config.no_venv is True
         assert config.reuse_existing_virtualenvs is True
+        assert config.reuse_venv == "yes"
         assert config.stop_on_first_error is True
         assert config.posargs == []
 
@@ -180,6 +182,7 @@ def test_main_short_form_args(monkeypatch):
         assert config.default_venv_backend == "venv"
         assert config.force_venv_backend == "conda"
         assert config.reuse_existing_virtualenvs is True
+        assert config.reuse_venv == "yes"
 
 
 def test_main_explicit_sessions(monkeypatch):
@@ -256,8 +259,33 @@ def test_main_list_option_from_nox_env_var(monkeypatch, var, option, env, values
         config = execute.call_args[1]["global_config"]
         config_values = getattr(config, option)
         assert len(config_values) == len(values)
-        for value in values:
-            assert value in config_values
+        assert all(value in config_values for value in values)
+
+
+@pytest.mark.parametrize(
+    "options,env,expected",
+    [
+        (["--default-venv-backend", "conda"], "", "conda"),
+        ([], "mamba", "mamba"),
+        (["--default-venv-backend", "conda"], "mamba", "conda"),
+    ],
+    ids=["option", "env", "option_over_env"],
+)
+def test_default_venv_backend_option(monkeypatch, options, env, expected):
+    monkeypatch.setenv("NOX_DEFAULT_VENV_BACKEND", env)
+    monkeypatch.setattr(sys, "argv", [sys.executable, *options])
+    with mock.patch("nox.workflow.execute") as execute:
+        execute.return_value = 0
+
+        # Call the main function.
+        with mock.patch.object(sys, "exit") as exit:
+            nox.__main__.main()
+            exit.assert_called_once_with(0)
+        assert execute.called
+
+        # Verify that the default venv backend is set in the config.
+        config = execute.call_args[1]["global_config"]
+        assert config.default_venv_backend == expected
 
 
 def test_main_positional_args(capsys, monkeypatch):
@@ -466,7 +494,8 @@ def test_main_with_bad_session_names(run_nox, session):
     assert session in stderr
 
 
-def test_main_noxfile_options(monkeypatch):
+def test_main_noxfile_options(monkeypatch, generate_noxfile_options):
+    noxfile_path = generate_noxfile_options(reuse_existing_virtualenvs=True)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -476,7 +505,7 @@ def test_main_noxfile_options(monkeypatch):
             "-s",
             "test",
             "--noxfile",
-            os.path.join(RESOURCES, "noxfile_options.py"),
+            noxfile_path,
         ],
     )
 
@@ -491,9 +520,11 @@ def test_main_noxfile_options(monkeypatch):
         # Verify that the config looks correct.
         config = honor_list_request.call_args[1]["global_config"]
         assert config.reuse_existing_virtualenvs is True
+        assert config.reuse_venv == "yes"
 
 
-def test_main_noxfile_options_disabled_by_flag(monkeypatch):
+def test_main_noxfile_options_disabled_by_flag(monkeypatch, generate_noxfile_options):
+    noxfile_path = generate_noxfile_options(reuse_existing_virtualenvs=True)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -504,7 +535,7 @@ def test_main_noxfile_options_disabled_by_flag(monkeypatch):
             "test",
             "--no-reuse-existing-virtualenvs",
             "--noxfile",
-            os.path.join(RESOURCES, "noxfile_options.py"),
+            noxfile_path,
         ],
     )
 
@@ -519,13 +550,15 @@ def test_main_noxfile_options_disabled_by_flag(monkeypatch):
         # Verify that the config looks correct.
         config = honor_list_request.call_args[1]["global_config"]
         assert config.reuse_existing_virtualenvs is False
+        assert config.reuse_venv == "no"
 
 
-def test_main_noxfile_options_sessions(monkeypatch):
+def test_main_noxfile_options_sessions(monkeypatch, generate_noxfile_options):
+    noxfile_path = generate_noxfile_options(reuse_existing_virtualenvs=True)
     monkeypatch.setattr(
         sys,
         "argv",
-        ["nox", "-l", "--noxfile", os.path.join(RESOURCES, "noxfile_options.py")],
+        ["nox", "-l", "--noxfile", noxfile_path],
     )
 
     with mock.patch("nox.tasks.honor_list_request") as honor_list_request:
@@ -693,4 +726,142 @@ def test_main_reuse_existing_virtualenvs_no_install(monkeypatch):
         with mock.patch.object(sys, "exit"):
             nox.__main__.main()
         config = execute.call_args[1]["global_config"]
-    assert config.reuse_existing_virtualenvs and config.no_install
+    assert (
+        config.reuse_existing_virtualenvs
+        and config.no_install
+        and config.reuse_venv == "yes"
+    )
+
+
+@pytest.mark.parametrize(
+    ("should_set_ci_env_var", "noxfile_option_value", "expected_final_value"),
+    [
+        (True, None, True),
+        (True, True, True),
+        (True, False, False),
+        (False, None, False),
+        (False, True, True),
+        (False, False, False),
+    ],
+)
+def test_main_noxfile_options_with_ci_override(
+    monkeypatch,
+    generate_noxfile_options,
+    should_set_ci_env_var,
+    noxfile_option_value,
+    expected_final_value,
+):
+    monkeypatch.delenv("CI", raising=False)  # make sure we have a clean environment
+    if should_set_ci_env_var:
+        monkeypatch.setenv("CI", "True")
+    # Reload nox.options taking into consideration monkeypatch.{delenv|setenv}
+    monkeypatch.setattr(
+        nox._options, "noxfile_options", nox._options.options.noxfile_namespace()
+    )
+    monkeypatch.setattr(nox, "options", nox._options.noxfile_options)
+
+    if noxfile_option_value is None:
+        noxfile_path = generate_noxfile_options()
+    else:
+        noxfile_path = generate_noxfile_options(
+            error_on_missing_interpreters=noxfile_option_value
+        )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["nox", "-l", "--noxfile", str(noxfile_path)],
+    )
+
+    with mock.patch(
+        "nox.tasks.honor_list_request", return_value=0
+    ) as honor_list_request:
+        with mock.patch("sys.exit"):
+            nox.__main__.main()
+        config = honor_list_request.call_args[1]["global_config"]
+    assert config.error_on_missing_interpreters == expected_final_value
+
+
+@pytest.mark.parametrize(
+    "reuse_venv",
+    [
+        "yes",
+        "no",
+        "always",
+        "never",
+    ],
+)
+def test_main_reuse_venv_cli_flags(monkeypatch, generate_noxfile_options, reuse_venv):
+    monkeypatch.setattr(sys, "argv", ["nox", "--reuse-venv", reuse_venv])
+    with mock.patch("nox.workflow.execute", return_value=0) as execute:
+        with mock.patch.object(sys, "exit"):
+            nox.__main__.main()
+        config = execute.call_args[1]["global_config"]
+    assert (
+        not config.reuse_existing_virtualenvs
+    )  # should remain unaffected in this case
+    assert config.reuse_venv == reuse_venv
+
+
+@pytest.mark.parametrize(
+    ("reuse_venv", "reuse_existing_virtualenvs", "expected"),
+    [
+        ("yes", None, "yes"),
+        ("yes", False, "yes"),
+        ("yes", True, "yes"),
+        ("yes", "--no-reuse-existing-virtualenvs", "no"),
+        ("yes", "--reuse-existing-virtualenvs", "yes"),
+        ("no", None, "no"),
+        ("no", False, "no"),
+        ("no", True, "yes"),
+        ("no", "--no-reuse-existing-virtualenvs", "no"),
+        ("no", "--reuse-existing-virtualenvs", "yes"),
+        ("always", None, "always"),
+        ("always", False, "always"),
+        ("always", True, "yes"),
+        ("always", "--no-reuse-existing-virtualenvs", "no"),
+        ("always", "--reuse-existing-virtualenvs", "yes"),
+        ("never", None, "never"),
+        ("never", False, "never"),
+        ("never", True, "yes"),
+        ("never", "--no-reuse-existing-virtualenvs", "no"),
+        ("never", "--reuse-existing-virtualenvs", "yes"),
+    ],
+)
+def test_main_noxfile_options_reuse_venv_compat_check(
+    monkeypatch,
+    generate_noxfile_options,
+    reuse_venv,
+    reuse_existing_virtualenvs,
+    expected,
+):
+    cmd_args = ["nox", "-l"]
+    # CLI Compat Check
+    if isinstance(reuse_existing_virtualenvs, str):
+        cmd_args += [reuse_existing_virtualenvs]
+
+    # Generate noxfile
+    if isinstance(reuse_existing_virtualenvs, bool):
+        # Non-CLI Compat Check
+        noxfile_path = generate_noxfile_options(
+            reuse_venv=reuse_venv, reuse_existing_virtualenvs=reuse_existing_virtualenvs
+        )
+    else:
+        noxfile_path = generate_noxfile_options(reuse_venv=reuse_venv)
+    cmd_args += ["--noxfile", str(noxfile_path)]
+
+    # Reset nox.options
+    monkeypatch.setattr(
+        nox._options, "noxfile_options", nox._options.options.noxfile_namespace()
+    )
+    monkeypatch.setattr(nox, "options", nox._options.noxfile_options)
+
+    # Execute
+    monkeypatch.setattr(sys, "argv", cmd_args)
+    with mock.patch(
+        "nox.tasks.honor_list_request", return_value=0
+    ) as honor_list_request:
+        with mock.patch("sys.exit"):
+            nox.__main__.main()
+        config = honor_list_request.call_args[1]["global_config"]
+    assert config.reuse_venv == expected

@@ -18,7 +18,8 @@ import argparse
 import ast
 import itertools
 from collections import OrderedDict
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from typing import Any, Mapping
 
 from nox._decorators import Call, Func
 from nox.sessions import Session, SessionRunner
@@ -154,6 +155,11 @@ class Manifest:
         if missing_sessions:
             raise KeyError(f"Sessions not found: {', '.join(missing_sessions)}")
 
+    def filter_by_default(self) -> None:
+        """Filter sessions in the queue based on the default flag."""
+
+        self._queue = [x for x in self._queue if x.func.default]
+
     def filter_by_python_interpreter(self, specified_pythons: Sequence[str]) -> None:
         """Filter sessions in the queue based on the user-specified
         python interpreter versions.
@@ -174,10 +180,10 @@ class Manifest:
         self._queue = [
             x
             for x in self._queue
-            if keyword_match(keywords, x.signatures + x.tags + [x.name])
+            if keyword_match(keywords, [*x.signatures, *x.tags, x.name])
         ]
 
-    def filter_by_tags(self, tags: list[str]) -> None:
+    def filter_by_tags(self, tags: Iterable[str]) -> None:
         """Filter sessions by their tags.
 
         Args:
@@ -229,6 +235,10 @@ class Manifest:
                 # Otherwise, add the extra specified python.
                 assert isinstance(func.python, str)
                 func.python = _unique_list(func.python, *extra_pythons)
+            elif not func.python and self._config.force_pythons:
+                # If a python is forced by the user, but the underlying function
+                # has no version parametrised, add it as sole occupant to func.python
+                func.python = _unique_list(*extra_pythons)
 
         # If the func has the python attribute set to a list, we'll need
         # to expand them.
@@ -280,7 +290,7 @@ class Manifest:
         return self.__next__()
 
     def notify(
-        self, session: str | SessionRunner, posargs: list[str] | None = None
+        self, session: str | SessionRunner, posargs: Iterable[str] | None = None
     ) -> bool:
         """Enqueue the specified session in the queue.
 
@@ -311,7 +321,7 @@ class Manifest:
         for s in self._all_sessions:
             if s == session or s.name == session or session in s.signatures:
                 if posargs is not None:
-                    s.posargs = posargs
+                    s.posargs = list(posargs)
                 self._queue.append(s)
                 return True
 
