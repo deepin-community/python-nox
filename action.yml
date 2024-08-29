@@ -4,7 +4,7 @@ inputs:
   python-versions:
     description: "comma-separated list of python versions to install"
     required: false
-    default: "3.7, 3.8, 3.9, 3.10, 3.11, pypy-3.7, pypy-3.8, pypy-3.9"
+    default: "3.8, 3.9, 3.10, 3.11, 3.12, pypy-3.9, pypy-3.10"
 branding:
   icon: package
   color: blue
@@ -12,10 +12,10 @@ branding:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-python@v4
+    - uses: actions/setup-python@v5
       id: localpython
       with:
-        python-version: "3.7 - 3.11"
+        python-version: "3.7 - 3.12"
         update-environment: false
 
     - name: "Validate input"
@@ -24,87 +24,52 @@ runs:
         '${{ steps.localpython.outputs.python-path }}' '${{ github.action_path }}/.github/action_helper.py' '${{ inputs.python-versions }}' >>${GITHUB_OUTPUT}
       shell: bash
 
-    - uses: actions/setup-python@v4
+    - uses: actions/setup-python@v5
+      id: allpython
       with:
-        python-version: "${{ steps.helper.outputs.interpreter_0 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 0 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_1 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 1 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_2 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 2 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_3 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 3 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_4 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 4 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_5 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 5 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_6 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 6 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_7 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 7 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_8 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 8 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_9 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 9 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_10 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 10 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_11 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 11 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_12 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 12 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_13 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 13 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_14 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 14 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_15 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 15 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_16 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 16 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_17 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 17 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_18 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 18 }}
-    - uses: actions/setup-python@v4
-      with:
-        python-version: "${{ steps.helper.outputs.interpreter_19 }}"
-      if: ${{ steps.helper.outputs.interpreter_count > 19 }}
+        python-version: "${{ join(fromJSON(steps.helper.outputs.interpreters), '\n') }}"
+        allow-prereleases: true
 
     - name: "Install nox"
-      run: pipx install --python "${{ steps.localpython.outputs.python-path }}" '${{ github.action_path }}'
-      shell: bash
+      run: |
+        import os
+        import shutil
+        import sys
+        import venv
+
+        from pathlib import Path
+        from subprocess import run
+
+
+        class EnvBuilder(venv.EnvBuilder):
+            def __init__(self):
+                super().__init__()
+
+            def setup_scripts(self, context):
+                pass
+
+            def post_setup(self, context):
+                super().post_setup(context)
+                self.bin_path = Path(context.env_exe).parent
+                run([sys.executable, "-m", "pip", "--python", context.env_exe, "install", r"${{ github.action_path }}"], check=True)
+
+
+        print("::group::Install nox")
+        nox_bin_path = Path(r"${{ runner.temp }}") / "nox"
+        if nox_bin_path.exists():
+            shutil.rmtree(nox_bin_path)
+        venv_path = Path(r"${{ runner.temp }}") / "nox-venv"
+        if venv_path.exists():
+            shutil.rmtree(venv_path)
+        builder = EnvBuilder()
+        builder.create(venv_path)
+        nox_path = [path for path in builder.bin_path.glob("nox*") if path.stem == "nox"][0]
+        nox_bin_path.mkdir()
+        try:
+            os.symlink(nox_path, nox_bin_path / nox_path.name)
+        except OSError:
+            shutil.copyfile(nox_path, nox_bin_path / nox_path.name)
+        with open(os.environ["GITHUB_PATH"], "at") as f:
+            f.write(f"{nox_bin_path}\n")
+        print("::endgroup::")
+      shell: "${{ steps.allpython.outputs.python-path }} -u {0}"

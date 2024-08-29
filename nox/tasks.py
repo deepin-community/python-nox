@@ -21,6 +21,7 @@ import os
 import sys
 import types
 from argparse import Namespace
+from typing import Sequence, TypeVar
 
 from colorlog.escape_codes import parse_colors
 
@@ -172,7 +173,9 @@ def filter_manifest(manifest: Manifest, global_config: Namespace) -> Manifest | 
     # This can raise KeyError if a specified session does not exist;
     # log this if it happens. The sessions does not come from the Noxfile
     # if keywords is not empty.
-    if global_config.sessions is not None:
+    if global_config.sessions is None:
+        manifest.filter_by_default()
+    else:
         try:
             manifest.filter_by_name(global_config.sessions)
         except KeyError as exc:
@@ -350,7 +353,12 @@ def run_manifest(manifest: Manifest, global_config: Namespace) -> list[Result]:
     return results
 
 
-def print_summary(results: list[Result], global_config: Namespace) -> list[Result]:
+Sequence_Results_T = TypeVar("Sequence_Results_T", bound=Sequence[Result])
+
+
+def print_summary(
+    results: Sequence_Results_T, global_config: Namespace
+) -> Sequence_Results_T:
     """Print a summary of the results.
 
     Args:
@@ -377,7 +385,9 @@ def print_summary(results: list[Result], global_config: Namespace) -> list[Resul
     return results
 
 
-def create_report(results: list[Result], global_config: Namespace) -> list[Result]:
+def create_report(
+    results: Sequence_Results_T, global_config: Namespace
+) -> Sequence_Results_T:
     """Write a report to the location designated in the config, if any.
 
     Args:

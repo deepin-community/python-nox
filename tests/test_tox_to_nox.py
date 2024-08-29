@@ -19,7 +19,11 @@ import textwrap
 
 import pytest
 
-from nox import tox_to_nox
+tox_to_nox = pytest.importorskip("nox.tox_to_nox")
+
+TOX4 = tox_to_nox.TOX4
+PYTHON_VERSION = f"{sys.version_info.major}.{sys.version_info.minor}"
+PYTHON_VERSION_NODOT = PYTHON_VERSION.replace(".", "")
 
 
 @pytest.fixture
@@ -40,9 +44,9 @@ def makeconfig(tmpdir):
 def test_trivial(makeconfig):
     result = makeconfig(
         textwrap.dedent(
-            """
+            f"""
     [tox]
-    envlist = py27
+    envlist = py{PYTHON_VERSION_NODOT}
     """
         )
     )
@@ -50,12 +54,12 @@ def test_trivial(makeconfig):
     assert (
         result
         == textwrap.dedent(
-            """
+            f"""
     import nox
 
 
-    @nox.session(python='python2.7')
-    def py27(session):
+    @nox.session(python='python{PYTHON_VERSION}')
+    def py{PYTHON_VERSION_NODOT}(session):
         session.install('.')
     """
         ).lstrip()
@@ -65,9 +69,9 @@ def test_trivial(makeconfig):
 def test_skipinstall(makeconfig):
     result = makeconfig(
         textwrap.dedent(
-            """
+            f"""
     [tox]
-    envlist = py27
+    envlist = py{PYTHON_VERSION_NODOT}
 
     [testenv]
     skip_install = True
@@ -78,12 +82,12 @@ def test_skipinstall(makeconfig):
     assert (
         result
         == textwrap.dedent(
-            """
+            f"""
     import nox
 
 
-    @nox.session(python='python2.7')
-    def py27(session):
+    @nox.session(python='python{PYTHON_VERSION}')
+    def py{PYTHON_VERSION_NODOT}(session):
     """
         ).lstrip()
     )
@@ -92,9 +96,9 @@ def test_skipinstall(makeconfig):
 def test_usedevelop(makeconfig):
     result = makeconfig(
         textwrap.dedent(
-            """
+            f"""
     [tox]
-    envlist = py27
+    envlist = py{PYTHON_VERSION_NODOT}
 
     [testenv]
     usedevelop = True
@@ -105,12 +109,12 @@ def test_usedevelop(makeconfig):
     assert (
         result
         == textwrap.dedent(
-            """
+            f"""
     import nox
 
 
-    @nox.session(python='python2.7')
-    def py27(session):
+    @nox.session(python='python{PYTHON_VERSION}')
+    def py{PYTHON_VERSION_NODOT}(session):
         session.install('-e', '.')
     """
         ).lstrip()
@@ -120,12 +124,12 @@ def test_usedevelop(makeconfig):
 def test_commands(makeconfig):
     result = makeconfig(
         textwrap.dedent(
-            """
+            f"""
     [tox]
     envlist = lint
 
     [testenv:lint]
-    basepython = python2.7
+    basepython = python{PYTHON_VERSION}
     commands =
         python setup.py check --metadata --restructuredtext --strict
         flake8 \\
@@ -138,11 +142,11 @@ def test_commands(makeconfig):
     assert (
         result
         == textwrap.dedent(
-            """
+            f"""
     import nox
 
 
-    @nox.session(python='python2.7')
+    @nox.session(python='python{PYTHON_VERSION}')
     def lint(session):
         session.install('.')
         session.run('python', 'setup.py', 'check', '--metadata', \
@@ -156,12 +160,12 @@ def test_commands(makeconfig):
 def test_deps(makeconfig):
     result = makeconfig(
         textwrap.dedent(
-            """
+            f"""
     [tox]
     envlist = lint
 
     [testenv:lint]
-    basepython = python2.7
+    basepython = python{PYTHON_VERSION}
     deps =
       flake8
       gcp-devrel-py-tools>=0.0.3
@@ -172,11 +176,11 @@ def test_deps(makeconfig):
     assert (
         result
         == textwrap.dedent(
-            """
+            f"""
     import nox
 
 
-    @nox.session(python='python2.7')
+    @nox.session(python='python{PYTHON_VERSION}')
     def lint(session):
         session.install('flake8', 'gcp-devrel-py-tools>=0.0.3')
         session.install('.')
@@ -188,12 +192,12 @@ def test_deps(makeconfig):
 def test_env(makeconfig):
     result = makeconfig(
         textwrap.dedent(
-            """
+            f"""
     [tox]
     envlist = lint
 
     [testenv:lint]
-    basepython = python2.7
+    basepython = python{PYTHON_VERSION}
     setenv =
         SPHINX_APIDOC_OPTIONS=members,inherited-members,show-inheritance
         TEST=meep
@@ -204,11 +208,11 @@ def test_env(makeconfig):
     assert (
         result
         == textwrap.dedent(
-            """
+            f"""
     import nox
 
 
-    @nox.session(python='python2.7')
+    @nox.session(python='python{PYTHON_VERSION}')
     def lint(session):
         session.env['SPHINX_APIDOC_OPTIONS'] = \
 'members,inherited-members,show-inheritance'
@@ -222,12 +226,12 @@ def test_env(makeconfig):
 def test_chdir(makeconfig):
     result = makeconfig(
         textwrap.dedent(
-            """
+            f"""
     [tox]
     envlist = lint
 
     [testenv:lint]
-    basepython = python2.7
+    basepython = python{PYTHON_VERSION}
     changedir = docs
     """
         )
@@ -236,11 +240,11 @@ def test_chdir(makeconfig):
     assert (
         result
         == textwrap.dedent(
-            """
+            f"""
     import nox
 
 
-    @nox.session(python='python2.7')
+    @nox.session(python='python{PYTHON_VERSION}')
     def lint(session):
         session.install('.')
         session.chdir('docs')
@@ -252,12 +256,12 @@ def test_chdir(makeconfig):
 def test_dash_in_envname(makeconfig):
     result = makeconfig(
         textwrap.dedent(
-            """
+            f"""
             [tox]
             envlist = test-with-dash
 
             [testenv:test-with-dash]
-            basepython = python2.7
+            basepython = python{PYTHON_VERSION}
             """
         )
     )
@@ -265,11 +269,11 @@ def test_dash_in_envname(makeconfig):
     assert (
         result
         == textwrap.dedent(
-            """
+            f"""
         import nox
 
 
-        @nox.session(python='python2.7')
+        @nox.session(python='python{PYTHON_VERSION}')
         def test_with_dash(session):
             session.install('.')
         """
@@ -277,15 +281,16 @@ def test_dash_in_envname(makeconfig):
     )
 
 
+@pytest.mark.skipif(TOX4, reason="Not supported in tox 4.")
 def test_non_identifier_in_envname(makeconfig, capfd):
     result = makeconfig(
         textwrap.dedent(
-            """
+            f"""
             [tox]
             envlist = test-with-&
 
             [testenv:test-with-&]
-            basepython = python2.7
+            basepython = python{PYTHON_VERSION}
             """
         )
     )
@@ -293,11 +298,11 @@ def test_non_identifier_in_envname(makeconfig, capfd):
     assert (
         result
         == textwrap.dedent(
-            """
+            f"""
         import nox
 
 
-        @nox.session(python='python2.7')
+        @nox.session(python='python{PYTHON_VERSION}')
         def test_with_&(session):
             session.install('.')
         """
@@ -307,8 +312,7 @@ def test_non_identifier_in_envname(makeconfig, capfd):
     out, _ = capfd.readouterr()
 
     assert (
-        out
-        == "Environment 'test_with_&' is not a valid nox session name.\n"
+        out == "Environment 'test_with_&' is not a valid nox session name.\n"
         "Manually update the session name in noxfile.py before running nox.\n"
     )
 
@@ -316,12 +320,12 @@ def test_non_identifier_in_envname(makeconfig, capfd):
 def test_descriptions_into_docstrings(makeconfig):
     result = makeconfig(
         textwrap.dedent(
-            """
+            f"""
             [tox]
             envlist = lint
 
             [testenv:lint]
-            basepython = python2.7
+            basepython = python{PYTHON_VERSION}
             description =
                 runs the lint action
                 now with an unnecessary second line
@@ -332,11 +336,11 @@ def test_descriptions_into_docstrings(makeconfig):
     assert (
         result
         == textwrap.dedent(
-            """
+            f"""
             import nox
 
 
-            @nox.session(python='python2.7')
+            @nox.session(python='python{PYTHON_VERSION}')
             def lint(session):
                 \"\"\"runs the lint action now with an unnecessary second line\"\"\"
                 session.install('.')

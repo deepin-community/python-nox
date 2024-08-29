@@ -18,6 +18,8 @@ import argparse
 import logging
 import operator
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -27,11 +29,47 @@ import pytest
 
 import nox.command
 import nox.manifest
+import nox.popen
 import nox.registry
 import nox.sessions
 import nox.virtualenv
 from nox import _options
 from nox.logger import logger
+
+HAS_CONDA = shutil.which("conda") is not None
+has_conda = pytest.mark.skipif(not HAS_CONDA, reason="Missing conda command.")
+
+
+def run_with_defaults(**kwargs):
+    return {
+        "env": None,
+        "silent": False,
+        "paths": None,
+        "success_codes": None,
+        "log": True,
+        "external": False,
+        "stdout": None,
+        "stderr": subprocess.STDOUT,
+        "interrupt_timeout": nox.popen.DEFAULT_INTERRUPT_TIMEOUT,
+        "terminate_timeout": nox.popen.DEFAULT_TERMINATE_TIMEOUT,
+        **kwargs,
+    }
+
+
+def _run_with_defaults(**kwargs):
+    return {
+        "env": None,
+        "include_outer_env": True,
+        "silent": False,
+        "success_codes": None,
+        "log": True,
+        "external": False,
+        "stdout": None,
+        "stderr": subprocess.STDOUT,
+        "interrupt_timeout": nox.popen.DEFAULT_INTERRUPT_TIMEOUT,
+        "terminate_timeout": nox.popen.DEFAULT_TERMINATE_TIMEOUT,
+        **kwargs,
+    }
 
 
 def test__normalize_path():
@@ -79,6 +117,7 @@ class TestSession:
         runner.venv = mock.create_autospec(nox.virtualenv.VirtualEnv)
         runner.venv.env = {}
         runner.venv.bin_paths = ["/no/bin/for/you"]
+        runner.venv.venv_backend = "venv"
         return nox.sessions.Session(runner=runner), runner
 
     def test_create_tmp(self):
@@ -123,7 +162,7 @@ class TestSession:
         with pytest.raises(
             ValueError, match=r"^The environment does not have a bin directory\.$"
         ):
-            session.bin
+            session.bin  # noqa: B018
         assert session.bin_paths is None
 
     def test_virtualenv_as_none(self):
@@ -133,6 +172,8 @@ class TestSession:
 
         with pytest.raises(ValueError, match="virtualenv"):
             _ = session.virtualenv
+
+        assert session.venv_backend == "none"
 
     def test_interactive(self):
         session, runner = self.make_session_and_runner()
@@ -243,10 +284,7 @@ class TestSession:
 
         run.assert_called_once_with(
             ("python", "-m", "pip", "install", "spam"),
-            env=mock.ANY,
-            external=mock.ANY,
-            paths=mock.ANY,
-            silent=mock.ANY,
+            **run_with_defaults(paths=mock.ANY, silent=True, env={}, external="error"),
         )
 
     def test_run_success(self):
@@ -264,29 +302,59 @@ class TestSession:
         session, runner = self.make_session_and_runner()
         runner.venv.env["A"] = "1"
         runner.venv.env["B"] = "2"
+        runner.venv.env["C"] = "4"
         result = session.run(
             sys.executable,
             "-c",
-            'import os; print(os.environ["A"], os.environ["B"])',
-            env={"B": "3"},
+            'import os; print(os.environ["A"], os.environ["B"], os.environ.get("C", "5"))',
+            env={"B": "3", "C": None},
             silent=True,
         )
-        assert result.strip() == "1 3"
+        assert result.strip() == "1 3 5"
+
+    def test_by_default_all_invocation_env_vars_are_passed(self):
+        session, runner = self.make_session_and_runner()
+        runner.venv.env["I_SHOULD_BE_INCLUDED"] = "happy"
+        runner.venv.env["I_SHOULD_BE_INCLUDED_TOO"] = "happier"
+        runner.venv.env["EVERYONE_SHOULD_BE_INCLUDED_TOO"] = "happiest"
+        result = session.run(
+            sys.executable,
+            "-c",
+            "import os; print(os.environ)",
+            silent=True,
+        )
+        assert "happy" in result
+        assert "happier" in result
+        assert "happiest" in result
+
+    def test_no_included_invocation_env_vars_are_passed(self):
+        session, runner = self.make_session_and_runner()
+        runner.venv.env["I_SHOULD_NOT_BE_INCLUDED"] = "sad"
+        runner.venv.env["AND_NEITHER_SHOULD_I"] = "unhappy"
+        result = session.run(
+            sys.executable,
+            "-c",
+            "import os; print(os.environ)",
+            env={"I_SHOULD_BE_INCLUDED": "happy"},
+            include_outer_env=False,
+            silent=True,
+        )
+        assert "sad" not in result
+        assert "unhappy" not in result
+        assert "happy" in result
 
     def test_run_external_not_a_virtualenv(self):
         # Non-virtualenv sessions should always allow external programs.
         session, runner = self.make_session_and_runner()
 
-        runner.venv = nox.virtualenv.ProcessEnv()
+        runner.venv = nox.virtualenv.PassthroughEnv()
 
         with mock.patch("nox.command.run", autospec=True) as run:
             session.run(sys.executable, "--version")
 
         run.assert_called_once_with(
             (sys.executable, "--version"),
-            external=True,
-            env=mock.ANY,
-            paths=None,
+            **run_with_defaults(external=True, env=mock.ANY),
         )
 
     def test_run_external_condaenv(self):
@@ -303,9 +371,9 @@ class TestSession:
 
         run.assert_called_once_with(
             ("conda", "--version"),
-            external=True,
-            env=mock.ANY,
-            paths=["/path/to/env/bin"],
+            **run_with_defaults(
+                external=True, env=mock.ANY, paths=["/path/to/env/bin"]
+            ),
         )
 
     def test_run_external_with_error_on_external_run(self):
@@ -327,25 +395,39 @@ class TestSession:
         with pytest.raises(nox.command.CommandFailed, match="External"):
             session.run(sys.executable, "--version")
 
-    def test_run_always_bad_args(self):
+    def test_run_install_bad_args(self):
         session, _ = self.make_session_and_runner()
 
         with pytest.raises(ValueError) as exc_info:
-            session.run_always()
+            session.run_install()
 
         exc_args = exc_info.value.args
-        assert exc_args == ("At least one argument required to run_always().",)
+        assert exc_args == ("At least one argument required to run_install().",)
 
-    def test_run_always_success(self):
+    def test_run_no_install_passthrough(self):
+        session, runner = self.make_session_and_runner()
+        runner.venv = nox.virtualenv.PassthroughEnv()
+        runner.global_config.no_install = True
+
+        session.install("numpy")
+        session.conda_install("numpy")
+
+    def test_run_no_conda_install(self):
+        session, runner = self.make_session_and_runner()
+
+        with pytest.raises(ValueError, match="A session without a conda"):
+            session.conda_install("numpy")
+
+    def test_run_install_success(self):
         session, _ = self.make_session_and_runner()
 
-        assert session.run_always(operator.add, 1300, 37) == 1337
+        assert session.run_install(operator.add, 1300, 37) == 1337
 
-    def test_run_always_install_only(self, caplog):
+    def test_run_install_install_only(self, caplog):
         session, runner = self.make_session_and_runner()
         runner.global_config.install_only = True
 
-        assert session.run_always(operator.add, 23, 19) == 42
+        assert session.run_install(operator.add, 23, 19) == 42
 
     @pytest.mark.parametrize(
         (
@@ -370,7 +452,7 @@ class TestSession:
     ):
         session, runner = self.make_session_and_runner()
 
-        runner.venv = nox.virtualenv.ProcessEnv()
+        runner.venv = nox.virtualenv.PassthroughEnv()
 
         subp_popen_instance = mock.Mock()
         subp_popen_instance.communicate.side_effect = KeyboardInterrupt()
@@ -406,13 +488,17 @@ class TestSession:
             (False, False, True),
         ],
     )
-    def test_run_always_no_install(self, no_install, reused, run_called):
+    @pytest.mark.parametrize("run_install_func", ["run_always", "run_install"])
+    def test_run_install_no_install(
+        self, no_install, reused, run_called, run_install_func
+    ):
         session, runner = self.make_session_and_runner()
         runner.global_config.no_install = no_install
         runner.venv._reused = reused
 
         with mock.patch.object(nox.command, "run") as run:
-            session.run_always("python", "-m", "pip", "install", "requests")
+            run_install = getattr(session, run_install_func)
+            run_install("python", "-m", "pip", "install", "requests")
 
         assert run.called is run_called
 
@@ -495,8 +581,7 @@ class TestSession:
                 "/path/to/conda/env",
                 "requests",
                 "urllib3",
-                silent=True,
-                external="error",
+                **_run_with_defaults(silent=True, external="error"),
             )
 
     @pytest.mark.parametrize(
@@ -570,8 +655,7 @@ class TestSession:
                 "requests",
                 # this will be double quoted if unquoted constraint is present
                 passed_arg,
-                silent=False,
-                external="error",
+                **_run_with_defaults(silent=False, external="error"),
             )
 
     def test_install_bad_args_no_arg(self):
@@ -598,11 +682,14 @@ class TestSession:
         )
         runner.venv = mock.create_autospec(nox.virtualenv.VirtualEnv)
         runner.venv.env = {}
+        runner.venv.venv_backend = "venv"
 
         class SessionNoSlots(nox.sessions.Session):
             pass
 
         session = SessionNoSlots(runner=runner)
+
+        assert session.venv_backend == "venv"
 
         with mock.patch.object(session, "_run", autospec=True) as run:
             session.install("requests", "urllib3")
@@ -613,8 +700,7 @@ class TestSession:
                 "install",
                 "requests",
                 "urllib3",
-                silent=True,
-                external="error",
+                **_run_with_defaults(silent=True, external="error"),
             )
 
     def test_install_non_default_kwargs(self):
@@ -627,6 +713,7 @@ class TestSession:
         )
         runner.venv = mock.create_autospec(nox.virtualenv.VirtualEnv)
         runner.venv.env = {}
+        runner.venv.venv_backend = "venv"
 
         class SessionNoSlots(nox.sessions.Session):
             pass
@@ -642,8 +729,7 @@ class TestSession:
                 "install",
                 "requests",
                 "urllib3",
-                silent=False,
-                external="error",
+                **_run_with_defaults(silent=False, external="error"),
             )
 
     def test_install_no_venv_failure(self):
@@ -763,17 +849,102 @@ class TestSession:
 
         assert run.called is run_called
 
+    def test_install_uv(self):
+        runner = nox.sessions.SessionRunner(
+            name="test",
+            signatures=["test"],
+            func=mock.sentinel.func,
+            global_config=_options.options.namespace(posargs=[]),
+            manifest=mock.create_autospec(nox.manifest.Manifest),
+        )
+        runner.venv = mock.create_autospec(nox.virtualenv.VirtualEnv)
+        runner.venv.env = {}
+        runner.venv.venv_backend = "uv"
+
+        class SessionNoSlots(nox.sessions.Session):
+            pass
+
+        session = SessionNoSlots(runner=runner)
+
+        with mock.patch.object(session, "_run", autospec=True) as run:
+            session.install("requests", "urllib3", silent=False)
+            run.assert_called_once_with(
+                "uv",
+                "pip",
+                "install",
+                "requests",
+                "urllib3",
+                **_run_with_defaults(silent=False, external="error"),
+            )
+
+    def test_install_uv_command(self, monkeypatch):
+        runner = nox.sessions.SessionRunner(
+            name="test",
+            signatures=["test"],
+            func=mock.sentinel.func,
+            global_config=_options.options.namespace(posargs=[]),
+            manifest=mock.create_autospec(nox.manifest.Manifest),
+        )
+        runner.venv = mock.create_autospec(nox.virtualenv.VirtualEnv)
+        runner.venv.env = {}
+        runner.venv.venv_backend = "uv"
+
+        class SessionNoSlots(nox.sessions.Session):
+            pass
+
+        session = SessionNoSlots(runner=runner)
+
+        monkeypatch.setattr(nox.virtualenv, "UV", "/some/uv")
+        monkeypatch.setattr(shutil, "which", lambda x, path=None: None)
+
+        with mock.patch.object(nox.command, "run", autospec=True) as run:
+            session.install("requests", "urllib3", silent=False)
+            run.assert_called_once()
+
+            ((call_args,), _) = run.call_args
+            assert call_args == (
+                "/some/uv",
+                "pip",
+                "install",
+                "requests",
+                "urllib3",
+            )
+
+        # user installs uv in the session venv
+        monkeypatch.setattr(
+            shutil, "which", lambda x, path="": path + "/uv" if x == "uv" else None
+        )
+
+        with mock.patch.object(nox.command, "run", autospec=True) as run:
+            session.install("requests", "urllib3", silent=False)
+            run.assert_called_once()
+
+            ((call_args,), _) = run.call_args
+            assert call_args == (
+                "uv",
+                "pip",
+                "install",
+                "requests",
+                "urllib3",
+            )
+
     def test___slots__(self):
         session, _ = self.make_session_and_runner()
         with pytest.raises(AttributeError):
             session.foo = "bar"
         with pytest.raises(AttributeError):
-            session.quux
+            session.quux  # noqa: B018
 
     def test___dict__(self):
         session, _ = self.make_session_and_runner()
         expected = {name: getattr(session, name) for name in session.__slots__}
         assert session.__dict__ == expected
+
+    def test_first_arg_list(self):
+        session, _ = self.make_session_and_runner()
+
+        with pytest.raises(ValueError):
+            session.run(["ls", "-al"])
 
 
 class TestSessionRunner:
@@ -790,7 +961,7 @@ class TestSessionRunner:
                 noxfile=os.path.join(os.getcwd(), "noxfile.py"),
                 envdir="envdir",
                 posargs=[],
-                reuse_existing_virtualenvs=False,
+                reuse_venv="no",
                 error_on_missing_interpreters="CI" in os.environ,
             ),
             manifest=mock.create_autospec(nox.manifest.Manifest),
@@ -873,7 +1044,12 @@ class TestSessionRunner:
                 nox.virtualenv.VirtualEnv,
             ),
             ("nox.virtualenv.VirtualEnv.create", "venv", nox.virtualenv.VirtualEnv),
-            ("nox.virtualenv.CondaEnv.create", "conda", nox.virtualenv.CondaEnv),
+            pytest.param(
+                "nox.virtualenv.CondaEnv.create",
+                "conda",
+                nox.virtualenv.CondaEnv,
+                marks=has_conda,
+            ),
         ],
     )
     def test__create_venv_options(self, create_method, venv_backend, expected_backend):
@@ -893,9 +1069,69 @@ class TestSessionRunner:
     def test__create_venv_unexpected_venv_backend(self):
         runner = self.make_runner()
         runner.func.venv_backend = "somenewenvtool"
-
         with pytest.raises(ValueError, match="venv_backend"):
             runner._create_venv()
+
+    @pytest.mark.parametrize(
+        "venv_backend",
+        ["uv|virtualenv", "conda|virtualenv", "mamba|conda|venv"],
+    )
+    def test_fallback_venv(self, venv_backend, monkeypatch):
+        runner = self.make_runner()
+        runner.func.venv_backend = venv_backend
+        monkeypatch.setattr(
+            nox.virtualenv,
+            "OPTIONAL_VENVS",
+            {"uv": False, "conda": False, "mamba": False},
+        )
+        with mock.patch("nox.virtualenv.VirtualEnv.create", autospec=True):
+            runner._create_venv()
+        assert runner.venv.venv_backend == venv_backend.split("|")[-1]
+
+    @pytest.mark.parametrize(
+        "venv_backend",
+        [
+            "uv|virtualenv|unknown",
+            "conda|unknown|virtualenv",
+            "virtualenv|venv",
+            "conda|mamba",
+        ],
+    )
+    def test_invalid_fallback_venv(self, venv_backend, monkeypatch):
+        runner = self.make_runner()
+        runner.func.venv_backend = venv_backend
+        monkeypatch.setattr(
+            nox.virtualenv,
+            "OPTIONAL_VENVS",
+            {"uv": False, "conda": False, "mamba": False},
+        )
+        with mock.patch(
+            "nox.virtualenv.VirtualEnv.create", autospec=True
+        ), pytest.raises(ValueError):
+            runner._create_venv()
+
+    @pytest.mark.parametrize(
+        ("reuse_venv", "reuse_venv_func", "should_reuse"),
+        [
+            ("yes", None, True),
+            ("yes", False, False),
+            ("yes", True, True),
+            ("no", None, False),
+            ("no", False, False),
+            ("no", True, True),
+            ("always", None, True),
+            ("always", False, True),
+            ("always", True, True),
+            ("never", None, False),
+            ("never", False, False),
+            ("never", True, False),
+        ],
+    )
+    def test__reuse_venv_outcome(self, reuse_venv, reuse_venv_func, should_reuse):
+        runner = self.make_runner()
+        runner.func.reuse_venv = reuse_venv_func
+        runner.global_config.reuse_venv = reuse_venv
+        assert runner.reuse_existing_venv() == should_reuse
 
     def make_runner_with_mock_venv(self):
         runner = self.make_runner()
@@ -1026,10 +1262,8 @@ class TestSessionRunner:
             session.run(
                 sys.executable,
                 "-c",
-                (
-                    "import os; raise SystemExit(0 if"
-                    f' os.environ["NOX_CURRENT_SESSION"] == {session.name!r} else 0)'
-                ),
+                "import os; raise SystemExit(0 if"
+                f' os.environ["NOX_CURRENT_SESSION"] == {session.name!r} else 0)',
             )
 
         runner.func = func
