@@ -16,12 +16,24 @@ from __future__ import annotations
 
 import argparse
 import functools
+import itertools
 import os
 import sys
+from collections.abc import Iterable
 from typing import Any, Callable, Sequence
+
+import argcomplete
 
 from nox import _option_set
 from nox.tasks import discover_manifest, filter_manifest, load_nox_module
+from nox.virtualenv import ALL_VENVS
+
+if sys.version_info < (3, 8):
+    from typing_extensions import Literal
+else:
+    from typing import Literal
+
+ReuseVenvType = Literal["no", "yes", "never", "always"]
 
 """All of Nox's configuration options."""
 
@@ -48,10 +60,8 @@ options.add_groups(
     _option_set.OptionGroup(
         "environment",
         "Environment options",
-        (
-            "These arguments are used to control Nox's creation and usage of virtual"
-            " environments."
-        ),
+        "These arguments are used to control Nox's creation and usage of virtual"
+        " environments.",
     ),
     _option_set.OptionGroup(
         "execution",
@@ -66,11 +76,11 @@ options.add_groups(
 )
 
 
-def _sessions_and_keywords_merge_func(
+def _sessions_merge_func(
     key: str, command_args: argparse.Namespace, noxfile_args: argparse.Namespace
 ) -> list[str]:
-    """Only return the Noxfile value for sessions/keywords if neither sessions
-    or keywords are specified on the command-line.
+    """Only return the Noxfile value for sessions/keywords if neither sessions,
+    keywords or tags are specified on the command-line.
 
     Args:
         key (str): This function is used for both the "sessions" and "keywords"
@@ -80,7 +90,11 @@ def _sessions_and_keywords_merge_func(
             command-line.
         noxfile_Args (_option_set.Namespace): The options specified in the
             Noxfile."""
-    if not command_args.sessions and not command_args.keywords:
+    if (
+        not command_args.sessions
+        and not command_args.keywords
+        and not command_args.tags
+    ):
         return getattr(noxfile_args, key)  # type: ignore[no-any-return]
     return getattr(command_args, key)  # type: ignore[no-any-return]
 
@@ -122,10 +136,8 @@ def _force_venv_backend_merge_func(
             raise ValueError(
                 "You can not use `--no-venv` with a non-none `--force-venv-backend`"
             )
-        else:
-            return "none"
-    else:
-        return command_args.force_venv_backend or noxfile_args.force_venv_backend  # type: ignore[no-any-return]
+        return "none"
+    return command_args.force_venv_backend or noxfile_args.force_venv_backend  # type: ignore[no-any-return]
 
 
 def _envdir_merge_func(
@@ -140,6 +152,30 @@ def _envdir_merge_func(
             Noxfile.
     """
     return command_args.envdir or noxfile_args.envdir or ".nox"
+
+
+def _reuse_venv_merge_func(
+    command_args: argparse.Namespace, noxfile_args: argparse.Namespace
+) -> ReuseVenvType:
+    """Merge reuse_venv from command args and Noxfile while maintaining
+    backwards compatibility with reuse_existing_virtualenvs. Default is "no".
+
+    Args:
+        command_args (_option_set.Namespace): The options specified on the
+            command-line.
+        noxfile_Args (_option_set.Namespace): The options specified in the
+            Noxfile.
+    """
+    # back-compat scenario with no_reuse_existing_virtualenvs/reuse_existing_virtualenvs
+    if command_args.no_reuse_existing_virtualenvs:
+        return "no"
+    if (
+        command_args.reuse_existing_virtualenvs
+        or noxfile_args.reuse_existing_virtualenvs
+    ):
+        return "yes"
+    # regular option behavior
+    return command_args.reuse_venv or noxfile_args.reuse_venv or "no"
 
 
 def default_env_var_list_factory(env_var: str) -> Callable[[], list[str] | None]:
@@ -177,7 +213,7 @@ def _color_finalizer(value: bool, args: argparse.Namespace) -> bool:
     if args.forcecolor:
         return True
 
-    if args.nocolor:
+    if args.nocolor or "NO_COLOR" in os.environ:
         return False
 
     return sys.stdout.isatty()
@@ -193,9 +229,19 @@ def _force_pythons_finalizer(
 
 
 def _R_finalizer(value: bool, args: argparse.Namespace) -> bool:
-    """Propagate -R to --reuse-existing-virtualenvs and --no-install."""
+    """Propagate -R to --reuse-existing-virtualenvs and --no-install and --reuse-venv=yes."""
     if value:
+        args.reuse_venv = "yes"
         args.reuse_existing_virtualenvs = args.no_install = value
+    return value
+
+
+def _reuse_existing_virtualenvs_finalizer(
+    value: bool, args: argparse.Namespace
+) -> bool:
+    """Propagate --reuse-existing-virtualenvs to --reuse-venv=yes."""
+    if value:
+        args.reuse_venv = "yes"
     return value
 
 
@@ -225,19 +271,42 @@ def _posargs_finalizer(
     return posargs[dash_index + 1 :]
 
 
+def _python_completer(
+    prefix: str, parsed_args: argparse.Namespace, **kwargs: Any
+) -> Iterable[str]:
+    module = load_nox_module(parsed_args)
+    manifest = discover_manifest(module, parsed_args)
+    return filter(
+        None,
+        (
+            session.func.python  # type:ignore[misc] # str sequences flattened, other non-strs falsey and filtered out
+            for session, _ in manifest.list_all_sessions()
+        ),
+    )
+
+
 def _session_completer(
     prefix: str, parsed_args: argparse.Namespace, **kwargs: Any
-) -> list[str]:
-    global_config = parsed_args
-    global_config.list_sessions = True
-    module = load_nox_module(global_config)
-    manifest = discover_manifest(module, global_config)
-    filtered_manifest = filter_manifest(manifest, global_config)
+) -> Iterable[str]:
+    parsed_args.list_sessions = True
+    module = load_nox_module(parsed_args)
+    manifest = discover_manifest(module, parsed_args)
+    filtered_manifest = filter_manifest(manifest, parsed_args)
     if isinstance(filtered_manifest, int):
         return []
-    return [
+    return (
         session.friendly_name for session, _ in filtered_manifest.list_all_sessions()
-    ]
+    )
+
+
+def _tag_completer(
+    prefix: str, parsed_args: argparse.Namespace, **kwargs: Any
+) -> Iterable[str]:
+    module = load_nox_module(parsed_args)
+    manifest = discover_manifest(module, parsed_args)
+    return itertools.chain.from_iterable(
+        filter(None, (session.tags for session, _ in manifest.list_all_sessions()))
+    )
 
 
 options.add_options(
@@ -280,7 +349,7 @@ options.add_options(
         "--session",
         group=options.groups["sessions"],
         noxfile=True,
-        merge_func=functools.partial(_sessions_and_keywords_merge_func, "sessions"),
+        merge_func=functools.partial(_sessions_merge_func, "sessions"),
         nargs="*",
         default=default_env_var_list_factory("NOXSESSION"),
         help="Which sessions to run. By default, all sessions will run.",
@@ -296,6 +365,7 @@ options.add_options(
         nargs="*",
         default=default_env_var_list_factory("NOXPYTHON"),
         help="Only run sessions that use the given python interpreter versions.",
+        completer=_python_completer,
     ),
     _option_set.Option(
         "keywords",
@@ -303,8 +373,9 @@ options.add_options(
         "--keywords",
         group=options.groups["sessions"],
         noxfile=True,
-        merge_func=functools.partial(_sessions_and_keywords_merge_func, "keywords"),
+        merge_func=functools.partial(_sessions_merge_func, "keywords"),
         help="Only run sessions that match the given expression.",
+        completer=argcomplete.completers.ChoicesCompleter(()),
     ),
     _option_set.Option(
         "tags",
@@ -312,8 +383,10 @@ options.add_options(
         "--tags",
         group=options.groups["sessions"],
         noxfile=True,
+        merge_func=functools.partial(_sessions_merge_func, "tags"),
         nargs="*",
         help="Only run sessions with the given tags.",
+        completer=_tag_completer,
     ),
     _option_set.Option(
         "posargs",
@@ -347,13 +420,13 @@ options.add_options(
         "--default-venv-backend",
         group=options.groups["environment"],
         noxfile=True,
+        default=lambda: os.environ.get("NOX_DEFAULT_VENV_BACKEND"),
         merge_func=_default_venv_backend_merge_func,
         help=(
             "Virtual environment backend to use by default for Nox sessions, this is"
-            " ``'virtualenv'`` by default but any of ``('virtualenv', 'conda', 'mamba',"
-            " 'venv')`` are accepted."
+            f" ``'virtualenv'`` by default but any of ``{list(ALL_VENVS)!r}`` are accepted."
         ),
-        choices=["none", "virtualenv", "conda", "mamba", "venv"],
+        choices=list(ALL_VENVS),
     ),
     _option_set.Option(
         "force_venv_backend",
@@ -365,10 +438,9 @@ options.add_options(
         help=(
             "Virtual environment backend to force-use for all Nox sessions in this run,"
             " overriding any other venv backend declared in the Noxfile and ignoring"
-            " the default backend. Any of ``('virtualenv', 'conda', 'mamba', 'venv')``"
-            " are accepted."
+            f" the default backend. Any of ``{list(ALL_VENVS)!r}`` are accepted."
         ),
-        choices=["none", "virtualenv", "conda", "mamba", "venv"],
+        choices=list(ALL_VENVS),
     ),
     _option_set.Option(
         "no_venv",
@@ -381,6 +453,18 @@ options.add_options(
             " creating a venv. This is an alias for '--force-venv-backend none'."
         ),
     ),
+    _option_set.Option(
+        "reuse_venv",
+        "--reuse-venv",
+        group=options.groups["environment"],
+        noxfile=True,
+        merge_func=_reuse_venv_merge_func,
+        help=(
+            "Controls existing virtualenvs recreation. This is ``'no'`` by"
+            " default, but any of ``('yes', 'no', 'always', 'never')`` are accepted."
+        ),
+        choices=["yes", "no", "always", "never"],
+    ),
     *_option_set.make_flag_pair(
         "reuse_existing_virtualenvs",
         ("-r", "--reuse-existing-virtualenvs"),
@@ -389,7 +473,8 @@ options.add_options(
             "--no-reuse-existing-virtualenvs",
         ),
         group=options.groups["environment"],
-        help="Re-use existing virtualenvs instead of recreating them.",
+        help="This is an alias for '--reuse-venv=yes|no'.",
+        finalizer_func=_reuse_existing_virtualenvs_finalizer,
     ),
     _option_set.Option(
         "R",
@@ -398,7 +483,7 @@ options.add_options(
         group=options.groups["environment"],
         action="store_true",
         help=(
-            "Re-use existing virtualenvs and skip package re-installation."
+            "Reuse existing virtualenvs and skip package re-installation."
             " This is an alias for '--reuse-existing-virtualenvs --no-install'."
         ),
         finalizer_func=_R_finalizer,
@@ -418,6 +503,7 @@ options.add_options(
         merge_func=_envdir_merge_func,
         group=options.groups["environment"],
         help="Directory where Nox will store virtualenvs, this is ``.nox`` by default.",
+        completer=argcomplete.completers.DirectoriesCompleter(),
     ),
     _option_set.Option(
         "extra_pythons",
@@ -427,9 +513,11 @@ options.add_options(
         nargs="*",
         default=default_env_var_list_factory("NOXEXTRAPYTHON"),
         help="Additionally, run sessions using the given python interpreter versions.",
+        completer=_python_completer,
     ),
     _option_set.Option(
         "force_pythons",
+        "-P",
         "--force-pythons",
         "--force-python",
         group=options.groups["python"],
@@ -438,8 +526,10 @@ options.add_options(
         help=(
             "Run sessions with the given interpreters instead of those listed in the"
             " Noxfile. This is a shorthand for ``--python=X.Y --extra-python=X.Y``."
+            " It will also work on sessions that don't have any interpreter parametrized."
         ),
         finalizer_func=_force_pythons_finalizer,
+        completer=_python_completer,
     ),
     *_option_set.make_flag_pair(
         "stop_on_first_error",
@@ -454,7 +544,7 @@ options.add_options(
         ("--no-error-on-missing-interpreters",),
         group=options.groups["execution"],
         help="Error instead of skipping sessions if an interpreter can not be located.",
-        default="CI" in os.environ,
+        default=lambda: "CI" in os.environ,
     ),
     *_option_set.make_flag_pair(
         "error_on_external_run",
@@ -481,7 +571,7 @@ options.add_options(
         action="store_true",
         help=(
             "Skip invocations of session methods for installing packages"
-            " (session.install, session.conda_install, session.run_always)"
+            " (session.install, session.conda_install, session.run_install)"
             " when a virtualenv is being reused."
         ),
     ),
@@ -491,6 +581,7 @@ options.add_options(
         group=options.groups["reporting"],
         noxfile=True,
         help="Output a report of all sessions to the given filename.",
+        completer=argcomplete.completers.FilesCompleter(("json",)),
     ),
     _option_set.Option(
         "non_interactive",

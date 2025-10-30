@@ -1,2 +1,3 @@
 tests
 nox.egg-info
+pyproject.toml

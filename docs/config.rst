@@ -26,6 +26,10 @@ with ``@nox.session``. For example:
 
 You can also configure sessions to run against multiple Python versions as described in :ref:`virtualenv config` and  parametrize sessions as described in :ref:`parametrized sessions <parametrized>`.
 
+By default, all sessions will be run if no sessions are specified. You can
+remove sessions from this default list by passing ``default=False`` in the
+``@nox.session(...)`` decorator. You can also specify a list of sessions to run by
+default using the ``nox.options.sessions = [...]`` configuration option.
 
 Session description
 -------------------
@@ -157,7 +161,7 @@ Use of :func:`session.install()` is deprecated without a virtualenv since it mod
     def tests(session):
         session.run("pip", "install", "nox")
 
-You can also specify that the virtualenv should *always* be reused instead of recreated every time:
+You can also specify that the virtualenv should *always* be reused instead of recreated every time unless ``--reuse-venv=never``:
 
 .. code-block:: python
 
@@ -167,13 +171,18 @@ You can also specify that the virtualenv should *always* be reused instead of re
     def tests(session):
         pass
 
-You are not limited to virtualenv, there is a selection of backends you can choose from as venv, conda, mamba, or virtualenv (default):
+You are not limited to virtualenv, there is a selection of backends you can choose from as venv, uv, conda, mamba, micromamba, or virtualenv (default):
 
 .. code-block:: python
 
     @nox.session(venv_backend='venv')
     def tests(session):
         pass
+
+You can chain together optional backends with ``|``, such as ``uv|virtualenv``
+or ``micromamba|mamba|conda``, and the first available backend will be selected.
+You cannot put anything after a backend that can't be missing like ``venv`` or
+``virtualenv``.
 
 Finally, custom backend parameters are supported:
 
@@ -182,6 +191,9 @@ Finally, custom backend parameters are supported:
     @nox.session(venv_params=['--no-download'])
     def tests(session):
         pass
+
+If you need to check to see which backend was selected, you can access it via
+``session.venv_backend``.
 
 
 Passing arguments into sessions
@@ -413,7 +425,7 @@ Nox has various :doc:`command line arguments <usage>` that can be used to modify
     def tests(session):
         ...
 
-Or, if you wanted to provide a set of sessions that are run by default:
+Or, if you wanted to provide a set of sessions that are run by default (this overrides the ``default=`` argument to sessions):
 
 .. code-block:: python
 
@@ -432,7 +444,8 @@ The following options can be specified in the Noxfile:
 * ``nox.options.tags`` is equivalent to specifying :ref:`-t or --tags <opt-sessions-pythons-and-keywords>`.
 * ``nox.options.default_venv_backend`` is equivalent to specifying :ref:`-db or --default-venv-backend <opt-default-venv-backend>`.
 * ``nox.options.force_venv_backend`` is equivalent to specifying :ref:`-fb or --force-venv-backend <opt-force-venv-backend>`.
-* ``nox.options.reuse_existing_virtualenvs`` is equivalent to specifying :ref:`--reuse-existing-virtualenvs <opt-reuse-existing-virtualenvs>`. You can force this off by specifying ``--no-reuse-existing-virtualenvs`` during invocation.
+* ``nox.options.reuse_venv`` is equivalent to specifying :ref:`--reuse-venv <opt-reuse-venv>`. Preferred over using ``nox.options.reuse_existing_virtualenvs``.
+* ``nox.options.reuse_existing_virtualenvs`` is equivalent to specifying :ref:`--reuse-existing-virtualenvs <opt-reuse-existing-virtualenvs>`. You can force this off by specifying ``--no-reuse-existing-virtualenvs`` during invocation. Alias of ``nox.options.reuse_venv=yes|no``.
 * ``nox.options.stop_on_first_error`` is equivalent to specifying :ref:`--stop-on-first-error <opt-stop-on-first-error>`. You can force this off by specifying ``--no-stop-on-first-error`` during invocation.
 * ``nox.options.error_on_missing_interpreters`` is equivalent to specifying :ref:`--error-on-missing-interpreters <opt-error-on-missing-interpreters>`. You can force this off by specifying ``--no-error-on-missing-interpreters`` during invocation.
 * ``nox.options.error_on_external_run`` is equivalent to specifying :ref:`--error-on-external-run <opt-error-on-external-run>`. You can force this off by specifying ``--no-error-on-external-run`` during invocation.

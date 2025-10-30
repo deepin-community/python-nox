@@ -1,5 +1,105 @@
 # Changelog
 
+## 2024.04.15
+
+We'd like to thank the following folks who contributed to this release:
+- @cjolowicz
+- @henryiii
+- @mayeut
+
+New features:
+* Added support for [PEP 723](https://peps.python.org/pep-0723/) (inline script metadata) with `nox.project.load_toml` by @henryiii in https://github.com/wntrblm/nox/pull/811
+* Added support for `micromamba` by @henryiii in https://github.com/wntrblm/nox/pull/807
+* Added `venv_backend` property to sessions by @henryiii in https://github.com/wntrblm/nox/pull/798
+* Added the ability to use `None` to remove environment variables by @henryiii in https://github.com/wntrblm/nox/pull/812
+* Added support for skipping sessions by default using `default=False` by @henryiii in https://github.com/wntrblm/nox/pull/810
+
+## Bugfixes
+
+* Use static arguments instead of `**kwargs` by @henryiii in https://github.com/wntrblm/nox/pull/815
+* Do not depend on `pipx` in Nox GitHub action by @mayeut in https://github.com/wntrblm/nox/pull/768
+* Disallow `UV_SYSTEM_PYTHON` by @henryiii in https://github.com/wntrblm/nox/pull/817
+* Ensure 'uv' always works in a uv venv by @henryiii in https://github.com/wntrblm/nox/pull/818
+* Look for `uv` next to `python` if it's not on `PATH` by @cjolowicz in https://github.com/wntrblm/nox/pull/795
+* Fixed missing f-string in `--help` message by @cjolowicz in https://github.com/wntrblm/nox/pull/790
+* Don't error if not installing to passthrough by @henryiii in https://github.com/wntrblm/nox/pull/809
+* Avoid mixing `venv` and `conda` from environment by @henryiii in https://github.com/wntrblm/nox/pull/804
+* Skip test for conda env when `conda` isn't installed by @cjolowicz in https://github.com/wntrblm/nox/pull/794
+
+
+## 2024.03.02
+
+We'd like to thank the following folks who contributed to this release:
+- @DiddiLeija
+- @MicaelJarniac
+- @chrysle
+- @edgarrmondragon
+- @fazledyn-or
+- @franekmagiera
+- @frenzymadness
+- @henryiii
+- @johnthagen
+- @mayeut
+- @patrick91
+- @q0w
+- @samypr100
+- @scop
+- @stasfilin
+- @stefanv
+
+New Features:
+* Add `uv` backend by @henryiii in https://github.com/wntrblm/nox/pull/762
+* Add venv backend fallback by @henryiii in https://github.com/wntrblm/nox/pull/787
+* Add option `--reuse-venv {yes,no,never,always}` by @samypr100 in https://github.com/wntrblm/nox/pull/730
+* Add environment variable `NOX_DEFAULT_VENV_BACKEND` for default backend by @edgarrmondragon in https://github.com/wntrblm/nox/pull/780
+* Rename `session.run_always` to `session.run_install` by @henryiii in https://github.com/wntrblm/nox/pull/770
+* Add more option argument completions by @scop in https://github.com/wntrblm/nox/pull/707
+* Implement `tox-to-nox` for tox 4 by @frenzymadness in https://github.com/wntrblm/nox/pull/687
+* Allow `--force-python` on unparametrized sessions by @chrysle in https://github.com/wntrblm/nox/pull/756
+* Add `include_outer_env` parameter to `session.run` and friends by @franekmagiera in https://github.com/wntrblm/nox/pull/652
+* GitHub Action: Add support for the `~` version specifier by @mayeut in https://github.com/wntrblm/nox/pull/712
+
+Bugfixes:
+* Rebuild environment when changing to an incompatible backend type by @henryiii in https://github.com/wntrblm/nox/pull/781
+* Warn user when first argument to `session.run` is a list by @stefanv in https://github.com/wntrblm/nox/pull/786
+* Allow overriding `nox.options.sessions` with `--tags` by @q0w in https://github.com/wntrblm/nox/pull/684
+* Allow overriding `NO_COLOR` with `--force-color` by @stasfilin in https://github.com/wntrblm/nox/pull/723
+* Fix `nox.options.error_on_missing_interpreters` when running in CI by @samypr100 in https://github.com/wntrblm/nox/pull/725
+
+Documentation Improvements:
+* Create an official Nox badge by @johnthagen in https://github.com/wntrblm/nox/pull/714 and https://github.com/wntrblm/nox/pull/715
+* Add recipe for generating a matrix with GitHub Actions by @henryiii in https://github.com/wntrblm/nox/pull/696
+* Update some links by @henryiii in https://github.com/wntrblm/nox/pull/774
+
+Internal Changes:
+* fix: always pull versions from metadata by @henryiii in https://github.com/wntrblm/nox/pull/782
+* chore: ruff moved to astral-sh by @henryiii in https://github.com/wntrblm/nox/pull/722
+* Use double quotes instead of single in github actions examples by @patrick91 in https://github.com/wntrblm/nox/pull/724
+* tests: fixes when running locally by @henryiii in https://github.com/wntrblm/nox/pull/721
+* chore: modernize Ruff config, bump pre-commit by @henryiii in https://github.com/wntrblm/nox/pull/744
+* chore(deps): bump actions/checkout from 3 to 4 by @dependabot in https://github.com/wntrblm/nox/pull/738
+* chore: ruff-format by @henryiii in https://github.com/wntrblm/nox/pull/745
+* chore(action): update default python-versions by @mayeut in https://github.com/wntrblm/nox/pull/767
+* chore(ci): allow manual runs on branches without a PR by @mayeut in https://github.com/wntrblm/nox/pull/766
+* chore(ci): bump actions/setup-python & conda-incubator/setup-miniconda by @mayeut in https://github.com/wntrblm/nox/pull/765
+* ci: group dependabot updates by @henryiii in https://github.com/wntrblm/nox/pull/755
+* fix(types): improve typing by @henryiii in https://github.com/wntrblm/nox/pull/720
+* ci: fix coverage combine for different OS's by @henryiii in https://github.com/wntrblm/nox/pull/778
+* ci: update to artifacts v2 by @henryiii in https://github.com/wntrblm/nox/pull/772
+* ci: remove skipped job & combine (faster) by @henryiii in https://github.com/wntrblm/nox/pull/771
+* chore: cleanup Ruff a bit by @henryiii in https://github.com/wntrblm/nox/pull/783
+* chore(deps): bump the actions group with 2 updates by @dependabot in https://github.com/wntrblm/nox/pull/784
+* style: add type hints, update few functions by @stasfilin in https://github.com/wntrblm/nox/pull/728
+* Include Python 3.12 in GHA by @DiddiLeija in https://github.com/wntrblm/nox/pull/743
+* Allow tests to pass in environments where NO_COLOR=1 is set by @edgarrmondragon in https://github.com/wntrblm/nox/pull/777
+* tests: support running when the Python launcher for UNIX is present by @henryiii in https://github.com/wntrblm/nox/pull/775
+* chore: drop unneeded config option by @henryiii in https://github.com/wntrblm/nox/pull/773
+* Bump minimum virtualenv to 20.14.1 by @johnthagen in https://github.com/wntrblm/nox/pull/747
+* chore: save session name in `Func` by @MicaelJarniac in https://github.com/wntrblm/nox/pull/718
+* Removed the problematic Python 2.7.18 version by @stasfilin in https://github.com/wntrblm/nox/pull/726
+* Fixed Improper Method Call: Replaced `NotImplementedError` by @fazledyn-or in https://github.com/wntrblm/nox/pull/749
+
+
 ## 2023.04.22
 
 We'd like to thank the following folks who contributed to this release:
