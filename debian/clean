@@ -5,3 +5,5 @@ nox.egg-info/entry_points.txt
 nox.egg-info/requires.txt
 nox.egg-info/top_level.txt
 nox.egg-info/not-zip-safe
+nox.1
+tox-to-nox.1

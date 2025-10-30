@@ -10,16 +10,16 @@ Forwarded: not-needed
  1 file changed, 3 insertions(+), 5 deletions(-)
 
 diff --git a/docs/conf.py b/docs/conf.py
-index ed9823c..86bf677 100644
+index 9d468cc..86bf677 100644
 --- a/docs/conf.py
 +++ b/docs/conf.py
 @@ -16,10 +16,7 @@ from __future__ import annotations
  import os
  import sys
  
--try:
--    import importlib.metadata as metadata
--except ImportError:
+-if sys.version_info >= (3, 8):
+-    from importlib import metadata
+-else:
 -    import importlib_metadata as metadata
 +from subprocess import check_output
  

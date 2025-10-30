@@ -15,46 +15,99 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import os
 import platform
 import shutil
+import sqlite3
 import sys
 
 import nox
 
 ON_WINDOWS_CI = "CI" in os.environ and platform.system() == "Windows"
 
+nox.needs_version = ">=2024.3.2"
+nox.options.default_venv_backend = "uv|virtualenv"
+
 # Skip 'conda_tests' if user doesn't have conda installed
 nox.options.sessions = ["tests", "cover", "lint", "docs"]
 if shutil.which("conda"):
     nox.options.sessions.append("conda_tests")
+if shutil.which("mamba"):
+    nox.options.sessions.append("mamba_tests")
+if shutil.which("micromamba"):
+    nox.options.sessions.append("micromamba_tests")
 
 
-@nox.session(python=["3.7", "3.8", "3.9", "3.10", "3.11"])
-def tests(session: nox.Session) -> None:
+# Because there is a dependency conflict between argcomplete and the latest tox
+# (both depend on a different version of importlibmetadata for Py 3.7) pip
+# installs tox 3 as the latest one for Py 3.7.
+@nox.session
+@nox.parametrize(
+    "python, tox_version",
+    [
+        (python, tox_version)
+        for python in ("3.7", "3.8", "3.9", "3.10", "3.11", "3.12")
+        for tox_version in ("latest", "<4")
+        if (python, tox_version) != ("3.7", "latest")
+    ],
+)
+def tests(session: nox.Session, tox_version: str) -> None:
     """Run test suite with pytest."""
+
+    coverage_file = (
+        f".coverage.{sys.platform}.{session.python}.tox{tox_version.lstrip('<')}"
+    )
+
     session.create_tmp()  # Fixes permission errors on Windows
     session.install("-r", "requirements-test.txt")
-    session.install("-e", ".[tox_to_nox]")
+    session.install("-e.[tox_to_nox]")
+    if tox_version != "latest":
+        session.install(f"tox{tox_version}")
     session.run(
         "pytest",
-        "--cov=nox",
+        "--cov",
         "--cov-config",
         "pyproject.toml",
         "--cov-report=",
         *session.posargs,
-        env={"COVERAGE_FILE": f".coverage.{session.python}"},
+        env={
+            "COVERAGE_FILE": coverage_file,
+        },
     )
-    session.notify("cover")
+
+    if sys.platform.startswith("win"):
+        with contextlib.closing(sqlite3.connect(coverage_file)) as con, con:
+            con.execute("UPDATE file SET path = REPLACE(path, '\\', '/')")
+            con.execute("DELETE FROM file WHERE SUBSTR(path, 2, 1) == ':'")
 
 
-@nox.session(python=["3.7", "3.8", "3.9", "3.10"], venv_backend="conda")
+@nox.session(venv_backend="conda")
 def conda_tests(session: nox.Session) -> None:
-    """Run test suite with pytest."""
-    session.create_tmp()  # Fixes permission errors on Windows
+    """Run test suite set up with conda."""
     session.conda_install(
-        "--file", "requirements-conda-test.txt", "--channel", "conda-forge"
+        "--file", "requirements-conda-test.txt", channel="conda-forge"
+    )
+    session.install("-e", ".", "--no-deps")
+    session.run("pytest", *session.posargs)
+
+
+@nox.session(venv_backend="mamba")
+def mamba_tests(session: nox.Session) -> None:
+    """Run test suite set up with mamba."""
+    session.conda_install(
+        "--file", "requirements-conda-test.txt", channel="conda-forge"
+    )
+    session.install("-e", ".", "--no-deps")
+    session.run("pytest", *session.posargs)
+
+
+@nox.session(venv_backend="micromamba")
+def micromamba_tests(session: nox.Session) -> None:
+    """Run test suite set up with micromamba."""
+    session.conda_install(
+        "--file", "requirements-conda-test.txt", channel="conda-forge"
     )
     session.install("-e", ".", "--no-deps")
     session.run("pytest", *session.posargs)
@@ -66,7 +119,7 @@ def cover(session: nox.Session) -> None:
     if ON_WINDOWS_CI:
         return
 
-    session.install("coverage[toml]")
+    session.install("coverage[toml]>=7.3")
     session.run("coverage", "combine")
     session.run("coverage", "report", "--fail-under=100", "--show-missing")
     session.run("coverage", "erase")
@@ -119,10 +172,8 @@ def _check_python_version(session: nox.Session) -> None:
     session.run(
         "python",
         "-c",
-        (
-            "import sys; assert '.'.join(str(v) for v in sys.version_info[:2]) =="
-            f" '{python_version}'"
-        ),
+        "import sys; assert '.'.join(str(v) for v in sys.version_info[:2]) =="
+        f" '{python_version}'",
     )
     if python_version[:2] != "2.":
         session.run(
@@ -133,7 +184,15 @@ def _check_python_version(session: nox.Session) -> None:
 
 
 @nox.session(
-    python=["3.7", "3.8", "3.9", "3.10", "3.11", "pypy3.7", "pypy3.8", "pypy3.9"]
+    python=[
+        "3.8",
+        "3.9",
+        "3.10",
+        "3.11",
+        "3.12",
+        "pypy3.9",
+        "pypy3.10",
+    ]
 )
 def github_actions_default_tests(session: nox.Session) -> None:
     """Check default versions installed by the nox GHA Action"""
@@ -141,7 +200,6 @@ def github_actions_default_tests(session: nox.Session) -> None:
     _check_python_version(session)
 
 
-# The following sessions are only to be run in CI to check the nox GHA action
 @nox.session(
     python=[
         "3.7",
@@ -149,11 +207,29 @@ def github_actions_default_tests(session: nox.Session) -> None:
         "3.9",
         "3.10",
         "3.11",
+        "3.12",
         "pypy3.7",
         "pypy3.8",
         "pypy3.9",
+        "pypy3.10",
     ]
 )
 def github_actions_all_tests(session: nox.Session) -> None:
     """Check all versions installed by the nox GHA Action"""
+    _check_python_version(session)
+
+
+@nox.session(
+    python=[
+        "3.10",
+        "3.11",
+        "3.12",
+        "pypy3.8",
+        "pypy3.9",
+        "pypy3.10",
+    ]
+)
+def github_actions_macos_14(session: nox.Session) -> None:
+    """Check default versions installed by the nox GHA Action"""
+    assert sys.version_info[:2] == (3, 11)
     _check_python_version(session)

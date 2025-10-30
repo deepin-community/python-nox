@@ -42,7 +42,6 @@ If you want to run ``nox`` within `GitHub Actions`_, you can use the ``wntrblm/n
     # setup nox only for a given list of python versions
     # Limitations:
     # - Version specifiers shall be supported by actions/setup-python
-    # - You can specify up-to 20 versions
     # - There can only be one "major.minor" per interpreter i.e. "3.7.0, 3.7.1" is invalid
     # this uses version 2022.8.7 but any Nox tag will work here
     - uses: wntrblm/nox@2022.8.7
@@ -144,20 +143,20 @@ If your project is a Python package and you want to install it:
 
 In some cases such as Python binary extensions, your package may depend on
 code compiled outside of the Python ecosystem. To make sure a low-level
-dependency (e.g. ``libfoo``) is available during installation
+dependency (e.g. ``libfoo``) is available during installation:
 
 .. code-block:: python
 
     @nox.session
     def tests(session):
         ...
-        session.run_always(
+        session.run_install(
             "cmake", "-DCMAKE_BUILD_TYPE=Debug",
             "-S", libfoo_src_dir,
             "-B", build_dir,
             external=True,
         )
-        session.run_always(
+        session.run_install(
             "cmake",
             "--build", build_dir,
             "--config", "Debug",
@@ -166,6 +165,49 @@ dependency (e.g. ``libfoo``) is available during installation
         )
         session.install(".")
         ...
+
+These commands will run even if you are only installing, and will not run if
+the environment is being reused without reinstallation.
+
+
+Loading dependencies from pyproject.toml or scripts
+---------------------------------------------------
+
+One common need is loading a dependency list from a ``pyproject.toml`` file
+(say to prepare an environment without installing the package) or supporting
+`PEP 723 <https://peps.python.org/pep-0723>`_ scripts. Nox provides a helper to
+load these with ``nox.project.load_toml``. It can be passed a filepath to a toml
+file or to a script file following PEP 723. For example, if you have the
+following ``peps.py``:
+
+
+.. code-block:: python
+
+    # /// script
+    # requires-python = ">=3.11"
+    # dependencies = [
+    #   "requests<3",
+    #   "rich",
+    # ]
+    # ///
+
+    import requests
+    from rich.pretty import pprint
+
+    resp = requests.get("https://peps.python.org/api/peps.json")
+    data = resp.json()
+    pprint([(k, v["title"]) for k, v in data.items()][:10])
+
+You can make a session for it like this:
+
+.. code-block:: python
+
+   @nox.session
+   def peps(session):
+       requirements = nox.project.load_toml("peps.py")["dependencies"]
+       session.install(*requirements)
+       session.run("peps.py")
+
 
 Running commands
 ----------------
@@ -395,12 +437,13 @@ Install packages with conda:
 
 .. code-block:: python
 
-    session.conda_install("pytest")
+    session.conda_install("pytest", channels=["conda-forge"])
 
 It is possible to install packages with pip into the conda environment, but
 it's a best practice only install pip packages with the ``--no-deps`` option.
-This prevents pip from breaking the conda environment by installing
-incompatible versions of packages already installed with conda.
+This prevents pip from breaking the conda environment by installing incompatible
+versions of packages already installed with conda. You should always specify
+channels for consistency; default channels can vary (and ``micromamba`` has none).
 
 .. code-block:: python
 
@@ -410,6 +453,9 @@ incompatible versions of packages already installed with conda.
 ``"mamba"`` is also allowed as a choice for ``venv_backend``, which will
 use/require `mamba <https://github.com/mamba-org/mamba>`_ instead of conda.
 
+``"micromamba"`` is also allowed as a choice for ``venv_backend``, which will
+use/require `micromamba <https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html#>`_
+instead of conda.
 
 Parametrization
 ---------------
@@ -511,5 +557,28 @@ For this point you can:
 
 * Read more docs, such as :doc:`usage` and :doc:`config`.
 * Give us feedback or contribute, see :doc:`CONTRIBUTING`.
+
+For any projects using Nox, you may add its official badge somewhere prominent
+like the README.
+
+.. image:: https://img.shields.io/badge/%F0%9F%A6%8A-Nox-D85E00.svg
+   :alt: Nox
+   :target: https://github.com/wntrblm/nox
+
+.. tabs::
+
+   .. tab:: Markdown
+
+      .. code-block:: markdown
+
+          [![Nox](https://img.shields.io/badge/%F0%9F%A6%8A-Nox-D85E00.svg)](https://github.com/wntrblm/nox)
+
+   .. tab:: reStructuredText
+
+        .. code-block:: rst
+
+            .. image:: https://img.shields.io/badge/%F0%9F%A6%8A-Nox-D85E00.svg
+               :alt: Nox
+               :target: https://github.com/wntrblm/nox
 
 Have fun! 💜

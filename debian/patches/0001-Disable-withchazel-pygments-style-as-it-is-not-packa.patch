@@ -7,7 +7,7 @@ Subject: Disable withchazel pygments style as it is not packaged yet.
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/docs/conf.py b/docs/conf.py
-index 7982f61..11c84c9 100644
+index ff265aa..a34d534 100644
 --- a/docs/conf.py
 +++ b/docs/conf.py
 @@ -105,7 +105,7 @@ add_module_names = False
